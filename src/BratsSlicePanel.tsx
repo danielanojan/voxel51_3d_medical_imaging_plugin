@@ -1,165 +1,248 @@
 import { useOperatorExecutor } from "@fiftyone/operators";
-import React, { useEffect, useRef, useState } from "react";
+import { selectedSamples, useSetSelected } from "@fiftyone/state";
+import React, { useCallback, useEffect, useRef, useState } from "react";
+import { useRecoilValue } from "recoil";
+import styled from "styled-components";
 
 type View = "axial" | "coronal" | "sagittal";
-type Phase =
-  | "init"
-  | "listing-axial"
-  | "listing-coronal"
-  | "listing-sagittal"
-  | "loading"
-  | "done"
-  | "error";
 
-interface SampleMeta { id: string; patient_id: string; }
+interface Sample {
+  id: string;
+  patient_id: string;
+  view: View;
+  num_slices: number;
+  has_seg: boolean;
+  has_ncr: boolean;
+  has_ed: boolean;
+  has_et: boolean;
+  masked_slice_count: number;
+  ncr_slice_count: number;
+  ed_slice_count: number;
+  et_slice_count: number;
+}
 
-const VIEWS: View[] = ["axial", "coronal", "sagittal"];
-const LIMIT = 10; // samples per view
+// All layout uses inline styles to avoid styled-components dual-instance issue.
+const panelStyle: React.CSSProperties = {
+  display: "flex", flexDirection: "column", height: "100%",
+  padding: "12px 16px", fontSize: "13px", color: "#ddd",
+  background: "#1a1a1a", overflow: "hidden", boxSizing: "border-box",
+};
 
-// 10-image test — no controls, no selection, no mask overlays.
-// Lists up to 10 samples per view then batch-loads all 30 images.
+const controlsStyle: React.CSSProperties = {
+  display: "flex", flexWrap: "wrap", alignItems: "center",
+  gap: "16px", paddingBottom: "12px", borderBottom: "1px solid #333", flexShrink: 0,
+};
+
+// alignContent:"start" prevents CSS Grid from stretching rows to fill panel height.
+// Without it, 171 samples / ~3 cols = ~57 rows each only ~12px tall (looks like lines).
+const gridStyle: React.CSSProperties = {
+  display: "grid",
+  gridTemplateColumns: "repeat(auto-fill, minmax(200px, 1fr))",
+  alignContent: "start",
+  gap: "10px", paddingTop: "12px",
+  overflowY: "auto", flex: 1, minHeight: 0,
+};
+
+const tileStyle: React.CSSProperties = {
+  background: "#242424", borderRadius: "6px", overflow: "hidden",
+};
+
+const tileMetaStyle: React.CSSProperties = {
+  display: "flex", flexWrap: "wrap", gap: "4px", padding: "4px 8px 8px",
+};
+
+// Styled-components only for interactive controls — border/background are dynamic.
+const ViewGroup = styled.div`display: flex; gap: 4px;`;
+
+const ViewBtn = styled.button<{ $active: boolean }>`
+  padding: 4px 10px; border-radius: 4px; cursor: pointer; font-size: 12px;
+  border: 1px solid ${p => (p.$active ? "#f97316" : "#444")};
+  background: ${p => (p.$active ? "#f97316" : "transparent")};
+  color: ${p => (p.$active ? "#fff" : "#aaa")};
+  &:hover { border-color: #f97316; }
+`;
+
+const SliderRow = styled.div`
+  display: flex; align-items: center; gap: 8px; flex: 1; min-width: 180px;
+`;
+
+const Slider = styled.input`flex: 1; accent-color: #f97316;`;
+
+const MaskGroup = styled.div`display: flex; gap: 12px;`;
+
+const MaskLabel = styled.label<{ $color: string }>`
+  display: flex; align-items: center; gap: 4px; cursor: pointer;
+  color: ${p => p.$color};
+  input { accent-color: ${p => p.$color}; cursor: pointer; }
+`;
+
+const MetaBadge = styled.span<{ $accent?: boolean }>`
+  padding: 2px 5px; border-radius: 999px; font-size: 10px; line-height: 1.4;
+  background: ${p => (p.$accent ? "#3a2a18" : "#2d2d2d")};
+  color: ${p => (p.$accent ? "#ffb36a" : "#9a9a9a")};
+`;
+
+const StatusBar = styled.div`
+  font-size: 11px; color: #555; padding-top: 6px; flex-shrink: 0;
+`;
+
 export function BratsSlicePanel() {
-  const listSamples = useOperatorExecutor(
-    "@daniel/brats-slice-viewer/list_brats_samples"
-  );
-  const loadBatch = useOperatorExecutor(
-    "@daniel/brats-slice-viewer/load_brats_slice_batch"
-  );
-
-  const [phaseDisplay, setPhaseDisplay] = useState<Phase>("init");
+  const [view, setView] = useState<View>("axial");
+  const [frame, setFrame] = useState(80);
+  const [maxSlices, setMaxSlices] = useState(155);
+  const [showNcr, setShowNcr] = useState(true);
+  const [showEd, setShowEd] = useState(true);
+  const [showEt, setShowEt] = useState(true);
+  const [samples, setSamples] = useState<Sample[]>([]);
   const [images, setImages] = useState<Record<string, string>>({});
-  const [log, setLog] = useState<string[]>([]);
-  const [allSamples, setAllSamples] = useState<SampleMeta[]>([]);
+  const selectedMap = useRecoilValue(selectedSamples);
+  const setSelected = useSetSelected();
 
-  const phaseRef = useRef<Phase>("init");
-  const viewSamples = useRef<Partial<Record<View, SampleMeta[]>>>({});
+  const samplesRef = useRef<Sample[]>([]);
+  const frameRef   = useRef(frame);
+  const maskRef    = useRef({ showNcr, showEd, showEt });
+  useEffect(() => { samplesRef.current = samples; }, [samples]);
+  useEffect(() => { frameRef.current = frame; }, [frame]);
+  useEffect(() => { maskRef.current = { showNcr, showEd, showEt }; }, [showNcr, showEd, showEt]);
 
-  const setPhase = (p: Phase) => {
-    phaseRef.current = p;
-    setPhaseDisplay(p);
-  };
-  const addLog = (msg: string) => setLog((l) => [...l.slice(-50), msg]);
+  const listSamples = useOperatorExecutor("@daniel/brats-slice-viewer/list_brats_samples");
+  const loadBatch   = useOperatorExecutor("@daniel/brats-slice-viewer/load_brats_slice_batch");
 
-  // On mount: start axial listing
+  const triggerLoad = useCallback(
+    (list: Sample[], f: number, ncr: boolean, ed: boolean, et: boolean) => {
+      if (list.length === 0) return;
+      loadBatch.execute({ sample_ids: list.map(s => s.id), frame: f, show_ncr: ncr, show_ed: ed, show_et: et });
+    },
+    [] // eslint-disable-line react-hooks/exhaustive-deps
+  );
+
   useEffect(() => {
-    addLog("Starting 10-image test...");
-    addLog("-> listing axial (limit " + LIMIT + ")");
-    setPhase("listing-axial");
-    listSamples.execute({ view: "axial" });
-  }, []); // eslint-disable-line react-hooks/exhaustive-deps
+    setImages({});
+    listSamples.execute({ view });
+  }, [view]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  // React to list results — chain axial → coronal → sagittal
   useEffect(() => {
     const res = listSamples.result as any;
-    if (res == null) return;
-    if (!res.ok) { addLog("list ERROR: " + JSON.stringify(res)); setPhase("error"); return; }
-
-    const ph = phaseRef.current;
-    const got: SampleMeta[] = (res.samples ?? []).slice(0, LIMIT).map((s: any) => ({
-      id: s.id, patient_id: s.patient_id,
-    }));
-    const curView: View = ph === "listing-axial" ? "axial" : ph === "listing-coronal" ? "coronal" : "sagittal";
-    const nextView: View | null = ph === "listing-axial" ? "coronal" : ph === "listing-coronal" ? "sagittal" : null;
-
-    addLog(curView + ": got " + got.length + " samples");
-    viewSamples.current[curView] = got;
-
-    if (nextView) {
-      addLog("-> listing " + nextView);
-      setPhase(("listing-" + nextView) as Phase);
-      listSamples.execute({ view: nextView });
-    } else {
-      // All views listed — fire the batch load
-      const combined: SampleMeta[] = [];
-      for (const v of VIEWS) combined.push(...(viewSamples.current[v] ?? []));
-      setAllSamples(combined);
-      const ids = combined.map((s) => s.id);
-      addLog("-> batch loading " + ids.length + " images at frame 77");
-      setPhase("loading");
-      loadBatch.execute({ sample_ids: ids, frame: 77, show_ncr: false, show_ed: false, show_et: false });
-    }
+    if (!res?.ok) return;
+    const newSamples: Sample[] = res.samples ?? [];
+    setSamples(newSamples);
+    samplesRef.current = newSamples;
+    const maxN = newSamples.reduce((m: number, s: Sample) => Math.max(m, s.num_slices), 1);
+    setMaxSlices(maxN);
+    const f = Math.min(frameRef.current, maxN - 1);
+    setFrame(f); frameRef.current = f;
+    const { showNcr: ncr, showEd: ed, showEt: et } = maskRef.current;
+    triggerLoad(newSamples, f, ncr, ed, et);
   }, [listSamples.result]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  // React to batch load result
   useEffect(() => {
     const res = loadBatch.result as any;
-    if (res == null) return;
-    if (!res.ok) { addLog("batch ERROR: " + JSON.stringify(res)); setPhase("error"); return; }
-
-    const newImgs: Record<string, string> = {};
-    let ok = 0; let fail = 0;
+    if (!res?.ok) return;
+    const updated: Record<string, string> = {};
     for (const r of res.results ?? []) {
-      if (!r.ok) { fail++; addLog("  FAIL ..." + r.sample_id?.slice(-8) + ": " + r.error); continue; }
-      newImgs[r.sample_id] = r.image;
-      ok++;
+      if (r.ok) updated[r.sample_id] = r.image;
     }
-    setImages(newImgs);
-    setPhase("done");
-    addLog("Done: " + ok + " loaded, " + fail + " failed");
+    setImages(prev => ({ ...prev, ...updated }));
   }, [loadBatch.result]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  const isLoading =
-    phaseDisplay !== "init" &&
-    phaseDisplay !== "done" &&
-    phaseDisplay !== "error";
+  useEffect(() => {
+    const list = samplesRef.current;
+    if (list.length === 0) return;
+    const t = setTimeout(() => {
+      triggerLoad(list, frame, showNcr, showEd, showEt);
+    }, 80);
+    return () => clearTimeout(t);
+  }, [frame, showNcr, showEd, showEt]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  const statusColor =
-    phaseDisplay === "done"
-      ? "#4ade80"
-      : phaseDisplay === "error"
-      ? "#f87171"
-      : "#f97316";
+  const isLoading = listSamples.isExecuting || loadBatch.isExecuting;
+
+  const onTileClick = useCallback((id: string, multi: boolean) => {
+    setSelected(current => {
+      const next = multi ? new Map(current) : new Map<string, "default" | "alt">();
+      if (multi && next.has(id)) next.delete(id); else next.set(id, "default");
+      return next;
+    });
+  }, [setSelected]);
 
   return (
-    <div style={{ padding: 12, color: "#ddd", background: "#1a1a1a", height: "100%", overflowY: "auto", boxSizing: "border-box", fontFamily: "sans-serif", fontSize: 13 }}>
-      {/* Status bar */}
-      <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 12 }}>
-        <span style={{ fontSize: 11, color: statusColor, fontWeight: "bold" }}>{phaseDisplay.toUpperCase()}</span>
-        {isLoading && <span style={{ fontSize: 11, color: "#666" }}>working...</span>}
-        <span style={{ fontSize: 11, color: "#444", marginLeft: "auto" }}>
-          {Object.keys(images).length} / {allSamples.length} images
-        </span>
+    <div style={panelStyle}>
+      <div style={controlsStyle}>
+        <ViewGroup>
+          {(["axial", "coronal", "sagittal"] as View[]).map(v => (
+            <ViewBtn key={v} $active={view === v} onClick={() => setView(v)}>
+              {v[0].toUpperCase() + v.slice(1)}
+            </ViewBtn>
+          ))}
+        </ViewGroup>
+
+        <SliderRow>
+          <span>Slice</span>
+          <Slider type="range" min={0} max={maxSlices - 1} value={frame}
+            onChange={e => setFrame(Number(e.target.value))} />
+          <span style={{ minWidth: "5ch", textAlign: "right" }}>{frame} / {maxSlices - 1}</span>
+        </SliderRow>
+
+        <MaskGroup>
+          <MaskLabel $color="#ff4444">
+            <input type="checkbox" checked={showNcr} onChange={e => setShowNcr(e.target.checked)} /> NCR
+          </MaskLabel>
+          <MaskLabel $color="#ffa500">
+            <input type="checkbox" checked={showEd} onChange={e => setShowEd(e.target.checked)} /> ED
+          </MaskLabel>
+          <MaskLabel $color="#ff00ff">
+            <input type="checkbox" checked={showEt} onChange={e => setShowEt(e.target.checked)} /> ET
+          </MaskLabel>
+        </MaskGroup>
       </div>
 
-      {/* One row-section per view */}
-      {VIEWS.map((v) => {
-        const list = viewSamples.current[v] ?? [];
-        return (
-          <div key={v} style={{ marginBottom: 20 }}>
-            <div style={{ fontSize: 12, fontWeight: "bold", color: "#f97316", marginBottom: 8, textTransform: "capitalize" }}>
-              {v} ({list.length})
-            </div>
-            <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(160px, 1fr))", gap: 8 }}>
-              {list.map((s) => (
-                <div key={s.id} style={{ background: "#242424", borderRadius: 6, overflow: "hidden" }}>
-                  <div style={{ padding: "3px 8px", fontSize: 10, color: "#666", borderBottom: "1px solid #2e2e2e", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
-                    {s.patient_id}
+      <div style={gridStyle}>
+        {samples.map(s => (
+          <div key={s.id} style={tileStyle}>
+            <button
+              type="button"
+              style={{
+                display: "flex", flexDirection: "column", width: "100%",
+                padding: 0, boxSizing: "border-box", cursor: "pointer",
+                border: `1px solid ${selectedMap.has(s.id) ? "#f97316" : "#303030"}`,
+                borderRadius: "6px", background: "transparent", overflow: "hidden",
+              }}
+              onClick={e => onTileClick(s.id, e.metaKey || e.ctrlKey)}
+              title={s.patient_id}
+            >
+              <div style={{ padding: "3px 8px", fontSize: 10, color: "#666", borderBottom: "1px solid #2e2e2e", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis", width: "100%", boxSizing: "border-box" }}>
+                {s.patient_id}
+              </div>
+
+              {images[s.id]
+                ? <img src={images[s.id]} alt={s.patient_id} style={{ width: "100%", height: "auto", display: "block", imageRendering: "pixelated" }} />
+                : <div style={{ height: 130, background: "#111", display: "flex", alignItems: "center", justifyContent: "center", color: "#333", fontSize: 18 }}>
+                    {isLoading ? "·" : "–"}
                   </div>
-                  {images[s.id]
-                    ? <img src={images[s.id]} alt={s.patient_id} style={{ width: "100%", height: "auto", display: "block" }} />
-                    : <div style={{ height: 120, display: "flex", alignItems: "center", justifyContent: "center", color: "#333", fontSize: 10 }}>
-                        {isLoading ? "..." : "no image"}
-                      </div>
-                  }
-                </div>
-              ))}
-              {list.length === 0 && (
-                <div style={{ color: "#444", fontSize: 11, padding: 8 }}>
-                  {isLoading ? "listing..." : "none"}
-                </div>
-              )}
-            </div>
-          </div>
-        );
-      })}
+              }
 
-      {/* Debug log */}
-      <div style={{ background: "#111", borderRadius: 4, padding: "8px 10px", marginTop: 8 }}>
-        <div style={{ fontSize: 10, color: "#555", marginBottom: 4 }}>DEBUG LOG</div>
-        <pre style={{ margin: 0, fontFamily: "monospace", fontSize: 10, color: "#666", lineHeight: 1.7, whiteSpace: "pre-wrap" }}>
-          {log.join("\n") || "-"}
-        </pre>
+              <div style={tileMetaStyle}>
+                {s.has_seg && <MetaBadge $accent>{s.masked_slice_count} masked</MetaBadge>}
+                {s.has_ncr && <MetaBadge>NCR {s.ncr_slice_count}</MetaBadge>}
+                {s.has_ed  && <MetaBadge>ED {s.ed_slice_count}</MetaBadge>}
+                {s.has_et  && <MetaBadge>ET {s.et_slice_count}</MetaBadge>}
+              </div>
+            </button>
+          </div>
+        ))}
+
+        {samples.length === 0 && listSamples.isExecuting && (
+          <div style={{ color: "#555", padding: 8 }}>Fetching samples…</div>
+        )}
+        {samples.length === 0 && !listSamples.isExecuting && (
+          <div style={{ color: "#555", padding: 8 }}>No samples for {view}.</div>
+        )}
       </div>
+
+      <StatusBar>
+        {isLoading
+          ? "Loading…"
+          : `${samples.length} samples · ${view} · ${Object.keys(images).length} images · ${selectedMap.size} selected`}
+      </StatusBar>
     </div>
   );
 }
