@@ -1,0 +1,17 @@
+name: "@daniel/brats-slice-viewer"
+version: 0.1.0
+description: |
+  Interactive T1C slice viewer for BraTS MRI datasets. Renders a grid of
+  patients with a global slice slider, view selector (axial/coronal/sagittal),
+  and toggleable per-class segmentation overlays (NCR/ED/ET).
+fiftyone:
+  version: ">=0.23"
+author: Daniel
+license: MIT
+operators:
+  - load_brats_slice
+  - load_brats_slice_batch
+  - list_brats_samples
+panels:
+  - BratsSliceViewer
+js_bundle: dist/index.umd.js
