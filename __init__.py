@@ -31,6 +31,7 @@ from PIL import Image
 import fiftyone as fo
 import fiftyone.operators as foo
 import fiftyone.operators.types as types
+import fiftyone.server.view as fosv
 
 
 # ─────────────────────────────────────────────
@@ -145,16 +146,25 @@ def _get_sample_dirs(dataset, sample_id):
 
 def _get_matching_patient_ids(ctx):
     """
-    Returns distinct patient_ids visible in ctx.view (respects sidebar filters).
+    Returns patient_ids from ctx.view in their current sort order.
+    Preserves both sidebar filters and any active sort (SortBy / SortBySimilarity).
     Returns None if ctx.view is unavailable — treat as "no filter".
-    Uses distinct() which is robust: even if ctx.view is scoped to a single
-    group slice (e.g. axial), all slices share the same patient_ids.
+
+    We iterate rather than using distinct() because distinct() runs a MongoDB
+    $group aggregation which discards sort order entirely.
     """
     view = getattr(ctx, "view", None)
     if view is None:
         return None
     try:
-        return view.distinct("patient_id")
+        seen = set()
+        patient_ids = []
+        for s in view.select_fields(["patient_id"]):
+            pid = getattr(s, "patient_id", None)
+            if pid and pid not in seen:
+                seen.add(pid)
+                patient_ids.append(pid)
+        return patient_ids
     except Exception:
         return None
 
@@ -294,57 +304,64 @@ class ListBratsSamples(foo.Operator):
 
     def execute(self, ctx):
         view_filter = ctx.params.get("view", "axial")
-        patient_ids = _get_matching_patient_ids(ctx)
 
-        # select_group_slices is the correct FiftyOne API for grouped datasets.
-        # match({"view": ...}) does NOT work because ctx.dataset has a default
-        # active group slice; queries against other slices return zero results.
-        sample_collection = ctx.dataset.select_group_slices([view_filter])
-
-        if patient_ids is None:
-            pass  # view unavailable — no patient filtering
-        elif not patient_ids:
-            return {"ok": True, "samples": []}  # sidebar filter matches zero
-        else:
-            sample_collection = sample_collection.match(
-                {"patient_id": {"$in": patient_ids}}
+        # Start from the target orientation only, then apply the same sidebar
+        # filters and sort (extended stages) that are active in the main view.
+        # This mirrors exactly what the native grid does:
+        #   base view → apply filters → apply extended stages (sort, selection)
+        # ctx.request_params carries "filters" and "extended" sent by the frontend.
+        base = ctx.dataset.select_group_slices([view_filter])
+        try:
+            sample_collection = fosv.get_extended_view(
+                base,
+                filters=ctx.request_params.get("filters"),
+                extended_stages=ctx.request_params.get("extended"),
             )
+        except Exception:
+            sample_collection = base
 
-        view = sample_collection.select_fields(
-            [
-                "patient_id",
-                "view",
-                "num_slices",
-                "axial_num_slices",
-                "coronal_num_slices",
-                "sagittal_num_slices",
-                "has_seg",
-                "has_ncr",
-                "has_ed",
-                "has_et",
-                "masked_slice_count",
-                "ncr_slice_count",
-                "ed_slice_count",
-                "et_slice_count",
-            ]
-        )
+        # Only select fields that exist in this dataset's schema
+        _schema = set(ctx.dataset.get_field_schema().keys())
+        _desired = [
+            "patient_id", "view", "tags",
+            "filepath", "slices_dir", "masks_dir",
+            "num_slices", "modality", "dataset_source",
+            "axial_num_slices", "coronal_num_slices", "sagittal_num_slices",
+            "has_seg", "has_ncr", "has_ed", "has_et",
+            "masked_slice_count", "ncr_slice_count", "ed_slice_count", "et_slice_count",
+            "created_at", "last_modified_at",
+        ]
+        _select = [f for f in _desired if f in _schema]
+        view = sample_collection.select_fields(_select)
+
+        def _get(s, field, default=None):
+            return getattr(s, field, default)
+
         samples = [
             {
                 "id": str(s.id),
-                "patient_id": s.patient_id,
-                "view": s.view,
-                "num_slices": int(s.num_slices or 0),
-                "axial_num_slices": int(s.axial_num_slices or 0),
-                "coronal_num_slices": int(s.coronal_num_slices or 0),
-                "sagittal_num_slices": int(s.sagittal_num_slices or 0),
-                "has_seg": bool(s.has_seg),
-                "has_ncr": bool(s.has_ncr),
-                "has_ed": bool(s.has_ed),
-                "has_et": bool(s.has_et),
-                "masked_slice_count": int(s.masked_slice_count or 0),
-                "ncr_slice_count": int(s.ncr_slice_count or 0),
-                "ed_slice_count": int(s.ed_slice_count or 0),
-                "et_slice_count": int(s.et_slice_count or 0),
+                "patient_id": _get(s, "patient_id", ""),
+                "view": _get(s, "view", ""),
+                "filepath": _get(s, "filepath", ""),
+                "slices_dir": _get(s, "slices_dir", ""),
+                "masks_dir": _get(s, "masks_dir", ""),
+                "modality": _get(s, "modality", ""),
+                "dataset_source": _get(s, "dataset_source", ""),
+                "tags": list(_get(s, "tags", None) or []),
+                "created_at": str(_get(s, "created_at", "") or ""),
+                "last_modified_at": str(_get(s, "last_modified_at", "") or ""),
+                "num_slices": int(_get(s, "num_slices", 0) or 0),
+                "axial_num_slices": int(_get(s, "axial_num_slices", 0) or 0),
+                "coronal_num_slices": int(_get(s, "coronal_num_slices", 0) or 0),
+                "sagittal_num_slices": int(_get(s, "sagittal_num_slices", 0) or 0),
+                "has_seg": bool(_get(s, "has_seg", False)),
+                "has_ncr": bool(_get(s, "has_ncr", False)),
+                "has_ed": bool(_get(s, "has_ed", False)),
+                "has_et": bool(_get(s, "has_et", False)),
+                "masked_slice_count": int(_get(s, "masked_slice_count", 0) or 0),
+                "ncr_slice_count": int(_get(s, "ncr_slice_count", 0) or 0),
+                "ed_slice_count": int(_get(s, "ed_slice_count", 0) or 0),
+                "et_slice_count": int(_get(s, "et_slice_count", 0) or 0),
             }
             for s in view
         ]
