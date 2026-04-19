@@ -5,7 +5,6 @@ import React, { useEffect, useMemo, useRef, useState } from "react";
 import { useRecoilValue } from "recoil";
 
 type View = "axial" | "coronal" | "sagittal";
-const LIMIT = 20;
 
 // Discrete zoom steps (column min-width px): small → large
 const SIZES = [90, 130, 180, 240, 320, 420, 560];
@@ -135,7 +134,7 @@ function BratsViewPanel({ view }: { view: View }) {
   useEffect(() => {
     const res = listOp.result as any;
     if (!res?.ok) return;
-    const s: Sample[] = (res.samples ?? []).slice(0, LIMIT);
+    const s: Sample[] = res.samples ?? [];
     samplesRef.current = s;
     setSamples(s);
     const { showNcr, showEd, showEt } = maskRef.current;
