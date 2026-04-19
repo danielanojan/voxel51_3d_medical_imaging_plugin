@@ -1,26 +1,10 @@
 import { PluginComponentType, registerComponent } from "@fiftyone/plugins";
-import { BratsAxialPanel, BratsCoronalPanel, BratsSagittalPanel } from "./BratsSlicePanel";
+import { BratsPanel } from "./BratsSlicePanel";
 
 registerComponent({
-  name: "BratsAxialViewer",
-  label: "BraTS Axial",
-  component: BratsAxialPanel,
-  type: PluginComponentType.Panel,
-  activator: () => true,
-});
-
-registerComponent({
-  name: "BratsCoronalViewer",
-  label: "BraTS Coronal",
-  component: BratsCoronalPanel,
-  type: PluginComponentType.Panel,
-  activator: () => true,
-});
-
-registerComponent({
-  name: "BratsSagittalViewer",
-  label: "BraTS Sagittal",
-  component: BratsSagittalPanel,
+  name: "BratsSliceViewer",
+  label: "BraTS Slice Viewer",
+  component: BratsPanel,
   type: PluginComponentType.Panel,
   activator: () => true,
 });

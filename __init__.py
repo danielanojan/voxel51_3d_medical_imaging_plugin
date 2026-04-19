@@ -121,6 +121,23 @@ def _image_to_data_url(img):
     return f"data:image/png;base64,{b64}"
 
 
+@lru_cache(maxsize=8192)
+def _composite_and_encode(slices_dir, masks_dir, frame_idx,
+                          show_ncr, show_ed, show_et):
+    """
+    Composite + base64-encode a slice.  All arguments are hashable so the
+    result is lru_cache-able.  Returns the data-URL string or None.
+
+    Cache size 8192 covers ≈171 patients × 48 frames × 1 mask combo before
+    eviction; revisited frames return in microseconds with no numpy work.
+    """
+    img = _composite_slice(slices_dir, masks_dir, frame_idx,
+                           show_ncr, show_ed, show_et)
+    if img is None:
+        return None
+    return _image_to_data_url(img)
+
+
 # ─────────────────────────────────────────────
 # Sample lookup
 # ─────────────────────────────────────────────
@@ -205,11 +222,11 @@ class LoadBratsSlice(foo.Operator):
         slices_dir, masks_dir, num_slices = dirs
         frame = max(0, min(frame, num_slices - 1)) if num_slices else frame
 
-        img = _composite_slice(
+        data_url = _composite_and_encode(
             slices_dir, masks_dir, frame,
             show_ncr, show_ed, show_et,
         )
-        if img is None:
+        if data_url is None:
             return {"ok": False, "error": f"frame {frame} missing"}
 
         return {
@@ -217,9 +234,10 @@ class LoadBratsSlice(foo.Operator):
             "sample_id": sample_id,
             "frame": frame,
             "num_slices": num_slices,
-            "image": _image_to_data_url(img),
-            "width": img.width,
-            "height": img.height,
+            "image": data_url,
+            "show_ncr": show_ncr,
+            "show_ed": show_ed,
+            "show_et": show_et,
         }
 
 
@@ -261,11 +279,11 @@ class LoadBratsSliceBatch(foo.Operator):
             slices_dir, masks_dir, num_slices = dirs
             f = max(0, min(frame, num_slices - 1)) if num_slices else frame
 
-            img = _composite_slice(
+            data_url = _composite_and_encode(
                 slices_dir, masks_dir, f,
                 show_ncr, show_ed, show_et,
             )
-            if img is None:
+            if data_url is None:
                 results.append({
                     "sample_id": sid, "ok": False,
                     "error": f"frame {f} missing",
@@ -277,9 +295,10 @@ class LoadBratsSliceBatch(foo.Operator):
                 "ok":         True,
                 "frame":      f,
                 "num_slices": num_slices,
-                "image":      _image_to_data_url(img),
-                "width":      img.width,
-                "height":     img.height,
+                "image":      data_url,
+                "show_ncr":   show_ncr,
+                "show_ed":    show_ed,
+                "show_et":    show_et,
             })
 
         return {"ok": True, "results": results}
