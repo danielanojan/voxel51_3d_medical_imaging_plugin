@@ -63,6 +63,7 @@ function buildTags(
 
 interface Sample {
   id: string;
+  group_id: string;
   patient_id: string;
   view: View;
   filepath: string;
@@ -89,6 +90,10 @@ interface Sample {
 
 // No styled-components. recoil/fos.view are externalized (host app instance) -- safe to use.
 function BratsPanel() {
+  // Opens the native FiftyOne sample modal (Visualize panel) for a given sample.
+  // useSetExpandedSample is exported from @fiftyone/state (externalized) and only
+  // uses Recoil internally — no Relay dependency — so it works from plugin context.
+  const setExpandedSample = fos.useSetExpandedSample();
   const [activeView, setActiveView] = useState<View>("axial");
   const [frame,      setFrame]      = useState(80);
   const [maxSlices,  setMaxSlices]  = useState(155); // updated from sample data on load
@@ -120,12 +125,26 @@ function BratsPanel() {
   const [selectedSamples, setSelectedSamples] = useRecoilState(fos.selectedSamples);
   const viewKey = JSON.stringify([fosView, fosFilters, fosExtended]);
 
+  // selectedSamples is Map<string, SelectionType> — use Map operations.
   const toggleSelected = (id: string) => {
-    setSelectedSamples(prev => {
-      const next = new Set(prev);
-      if (next.has(id)) next.delete(id); else next.add(id);
+    setSelectedSamples((prev: Map<string, string>) => {
+      const next = new Map(prev);
+      if (next.has(id)) next.delete(id); else next.set(id, "default");
       return next;
     });
+  };
+
+  // Plain click → open modal (native Visualize panel).
+  // Ctrl/Cmd+click → toggle sample selection without opening modal.
+  const handleTileClick = (e: React.MouseEvent, sample: Sample) => {
+    if (e.ctrlKey || e.metaKey) {
+      toggleSelected(sample.id);
+    } else {
+      setExpandedSample({
+        id: sample.id,
+        groupId: sample.group_id || undefined,
+      });
+    }
   };
 
   const samplesRef   = useRef<Sample[]>([]);
@@ -364,7 +383,7 @@ function BratsPanel() {
 
                   return (
                   <div key={s.id}
-                    onClick={() => toggleSelected(s.id)}
+                    onClick={e => handleTileClick(e, s)}
                     style={{ position: "relative", background: "#1e1e1e",
                     borderRadius: 4, overflow: "hidden", cursor: "pointer",
                     border: selectedSamples.has(s.id)
@@ -384,7 +403,7 @@ function BratsPanel() {
                     {images[s.id]
                       ? <img src={images[s.id]} alt={s.patient_id}
                           style={{ width: "100%", height: "auto",
-                            display: "block", imageRendering: "pixelated" }} />
+                            display: "block", imageRendering: "auto" }} />
                       : <div style={{
                           aspectRatio,
                           background: "#111",

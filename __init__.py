@@ -113,12 +113,29 @@ def _composite_slice(slices_dir, masks_dir, frame_idx,
     return Image.fromarray(np.clip(base_rgb, 0, 255).astype(np.uint8), "RGB")
 
 
+# Max dimension (px) to encode. Tiles are displayed at ≤420px;
+# sending full 240px source images is fine — 2× display size gives
+# crisp retina rendering while keeping payload small.
+# Reduce to 180 for fastest loads at the cost of slight softness when zoomed in.
+ENCODE_MAX_DIM = 240
+
+
 def _image_to_data_url(img):
-    """PIL.Image → 'data:image/png;base64,...' string."""
+    """PIL.Image → 'data:image/jpeg;base64,...' string.
+
+    JPEG instead of PNG: ~5× smaller payload (3–8 KB vs 15–40 KB per tile).
+    Quality 88 preserves all clinically visible detail at tile sizes.
+    Resize to ENCODE_MAX_DIM before encoding — tiles ≤240px display pixels
+    perfectly and the payload shrinks proportionally to the area reduction.
+    """
+    w, h = img.size
+    if max(w, h) > ENCODE_MAX_DIM:
+        scale = ENCODE_MAX_DIM / max(w, h)
+        img = img.resize((int(w * scale), int(h * scale)), Image.LANCZOS)
     buf = io.BytesIO()
-    img.save(buf, format="PNG", optimize=False)
+    img.save(buf, format="JPEG", quality=88, optimize=True)
     b64 = base64.b64encode(buf.getvalue()).decode("ascii")
-    return f"data:image/png;base64,{b64}"
+    return f"data:image/jpeg;base64,{b64}"
 
 
 @lru_cache(maxsize=8192)
@@ -349,6 +366,7 @@ class ListBratsSamples(foo.Operator):
             "has_seg", "has_ncr", "has_ed", "has_et",
             "masked_slice_count", "ncr_slice_count", "ed_slice_count", "et_slice_count",
             "created_at", "last_modified_at",
+            "group",
         ]
         _select = [f for f in _desired if f in _schema]
         view = sample_collection.select_fields(_select)
@@ -359,6 +377,7 @@ class ListBratsSamples(foo.Operator):
         samples = [
             {
                 "id": str(s.id),
+                "group_id": str(_get(s, "group", None).id) if _get(s, "group", None) else "",
                 "patient_id": _get(s, "patient_id", ""),
                 "view": _get(s, "view", ""),
                 "filepath": _get(s, "filepath", ""),
