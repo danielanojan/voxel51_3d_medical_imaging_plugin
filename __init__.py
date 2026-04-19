@@ -32,6 +32,74 @@ import fiftyone as fo
 import fiftyone.operators as foo
 import fiftyone.operators.types as types
 import fiftyone.server.view as fosv
+from fiftyone.core.odm.dataset import SidebarGroupDocument
+
+
+# ─────────────────────────────────────────────
+# One-time dataset configuration
+# ─────────────────────────────────────────────
+
+_display_fields_initialized = False
+
+
+def _ensure_display_fields(dataset):
+    """
+    Add show_ncr / show_ed / show_et boolean fields and a
+    'display_segmentation' sidebar group to the dataset if they don't already
+    exist, and configure them as active (eye ON) by default.
+
+    Called at most once per FiftyOne Python process; a module-level flag
+    prevents repeated no-op calls on every operator execute.
+    """
+    global _display_fields_initialized
+    if _display_fields_initialized:
+        return
+    _display_fields_initialized = True
+
+    schema = dataset.get_field_schema()
+    fields_to_add = [
+        f for f in ("show_ncr", "show_ed", "show_et") if f not in schema
+    ]
+    changed = bool(fields_to_add)
+
+    for fname in fields_to_add:
+        dataset.add_sample_field(fname, fo.BooleanField)
+
+    if fields_to_add:
+        n = len(dataset)
+        for fname in fields_to_add:
+            dataset.set_values(fname, [True] * n)
+
+    # Add the custom sidebar group if it isn't already present.
+    existing_groups = list(dataset.app_config.sidebar_groups or [])
+    if not any(g.name == "display_segmentation" for g in existing_groups):
+        existing_groups.append(
+            SidebarGroupDocument(
+                name="display_segmentation",
+                paths=["show_ncr", "show_ed", "show_et"],
+            )
+        )
+        dataset.app_config.sidebar_groups = existing_groups
+        changed = True
+
+    # Make show_ncr / show_ed / show_et active (eye ON) by default so that
+    # overlays are visible without the user having to click the eye icon first.
+    ctrl_fields = ["show_ncr", "show_ed", "show_et"]
+    try:
+        af = dataset.app_config.active_fields
+        if af is None:
+            af = fo.DatasetAppConfig.default_active_fields(dataset)
+        current_paths = list(af.paths or [])
+        missing = [f for f in ctrl_fields if f not in current_paths]
+        if missing:
+            af.paths = current_paths + missing
+            dataset.app_config.active_fields = af
+            changed = True
+    except Exception:
+        pass  # active_fields config unsupported in this FiftyOne version
+
+    if changed:
+        dataset.save()
 
 
 # ─────────────────────────────────────────────
@@ -339,6 +407,9 @@ class ListBratsSamples(foo.Operator):
         return types.Property(types.Object())
 
     def execute(self, ctx):
+        # Ensure display_segmentation sidebar group + show_* fields exist.
+        _ensure_display_fields(ctx.dataset)
+
         view_filter = ctx.params.get("view", "axial")
 
         # Start from the target orientation only, then apply the same sidebar

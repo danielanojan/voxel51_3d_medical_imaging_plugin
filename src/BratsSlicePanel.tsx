@@ -88,6 +88,10 @@ interface Sample {
   et_slice_count: number;
 }
 
+// Fields that control overlay visibility — shown in the 'display_segmentation'
+// sidebar group. Kept out of buildTags so they don't produce value bubbles.
+const DISPLAY_CTRL_FIELDS = new Set(["show_ncr", "show_ed", "show_et"]);
+
 // No styled-components. recoil/fos.view are externalized (host app instance) -- safe to use.
 function BratsPanel() {
   // Opens the native FiftyOne sample modal (Visualize panel) for a given sample.
@@ -97,9 +101,6 @@ function BratsPanel() {
   const [activeView, setActiveView] = useState<View>("axial");
   const [frame,      setFrame]      = useState(80);
   const [maxSlices,  setMaxSlices]  = useState(155); // updated from sample data on load
-  const [showNcr,    setShowNcr]    = useState(true);
-  const [showEd,     setShowEd]     = useState(true);
-  const [showEt,     setShowEt]     = useState(true);
   // sizeIdx indexes into SIZES; small value = fewer cols (zoomed in), large = more cols
   const [sizeIdx, setSizeIdx] = useState(DEFAULT_SIZE_IDX);
   const colSize = SIZES[sizeIdx];
@@ -110,8 +111,24 @@ function BratsPanel() {
   // Per-panel image cache — survives re-renders, cleared on reList()
   const imageCache = useRef<Map<string, string>>(new Map());
 
-  // Native FiftyOne field display — same color palette as GridTagBubbles
+  // Native FiftyOne field display — same color palette as GridTagBubbles.
+  // activePaths reflects the sidebar eye-icon state for ALL fields, including
+  // our custom show_ncr / show_ed / show_et overlay-control fields.
   const lookerOptions = fos.useLookerOptions(false);
+  const activePaths = lookerOptions?.activePaths ?? [];
+
+  // Overlay toggles — driven by the sidebar eye icons (display_segmentation group).
+  // If neither the fields nor any active-field config has been set yet (empty
+  // activePaths or control fields absent), preserve the historic default of
+  // showing all overlays. Once the dataset is configured and the app restarts,
+  // each field is individually toggled via its eye icon.
+  const hasDisplayFields =
+    activePaths.includes("show_ncr") ||
+    activePaths.includes("show_ed")  ||
+    activePaths.includes("show_et");
+  const showNcr = !hasDisplayFields || activePaths.includes("show_ncr");
+  const showEd  = !hasDisplayFields || activePaths.includes("show_ed");
+  const showEt  = !hasDisplayFields || activePaths.includes("show_et");
 
   // Track all state atoms that can change what samples are shown or highlighted:
   //   fos.view            — committed view pipeline stages (saved views)
@@ -330,23 +347,6 @@ function BratsPanel() {
           </span>
         </div>
 
-        {/* Mask toggles */}
-        <div style={{ display: "flex", gap: 10 }}>
-          {([
-            ["NCR", "#ff4444", showNcr, setShowNcr],
-            ["ED",  "#ffa500", showEd,  setShowEd],
-            ["ET",  "#ff00ff", showEt,  setShowEt],
-          ] as const).map(([label, color, val, setter]) => (
-            <label key={label} style={{ display: "flex", alignItems: "center",
-              gap: 4, cursor: "pointer", color, fontSize: 12 }}>
-              <input type="checkbox" checked={val}
-                onChange={e => (setter as any)(e.target.checked)}
-                style={{ accentColor: color }} />
-              {label}
-            </label>
-          ))}
-        </div>
-
         {/* Size slider */}
         <input type="range" min={0} max={SIZES.length - 1} value={sizeIdx}
           title="Image size"
@@ -375,8 +375,13 @@ function BratsPanel() {
                 {isLoading ? "Listing..." : "No samples — adjust sidebar filters and click ↻"}
               </div>
               : samples.map(s => {
+                  // Filter out overlay-control fields so they don't produce
+                  // value bubbles on every tile.
+                  const tagPaths = activePaths.filter(
+                    p => !DISPLAY_CTRL_FIELDS.has(p)
+                  );
                   const tags = buildTags(
-                    lookerOptions?.activePaths ?? [],
+                    tagPaths,
                     s as any,
                     lookerOptions?.coloring as any,
                   );
