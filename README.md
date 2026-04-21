@@ -1,4 +1,4 @@
-# @daniel NIfTI Plugins for FiftyOne
+NIfTI Plugins for FiftyOne
 
 Two FiftyOne plugins for interactive exploration of NIfTI MRI datasets.
 
