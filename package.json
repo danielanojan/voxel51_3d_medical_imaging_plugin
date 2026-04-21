@@ -1,0 +1,50 @@
+{
+    "name": "@daniel/nifti-3d-viewer",
+    "version": "1.0.0",
+    "description": "NIfTI 3D JS viewer plugin for FiftyOne",
+    "type": "module",
+    "main": "src/index.tsx",
+    "fiftyone": {
+        "script": "dist/index.umd.js"
+    },
+    "scripts": {
+        "dev": "nodemon --watch ./src --ext js,jsx,ts,tsx --exec 'yarn build'",
+        "build": "vite build"
+    },
+    "license": "MIT",
+    "dependencies": {
+        "@fiftyone/commands": "portal:../../app/packages/commands",
+        "@fiftyone/components": "portal:../../app/packages/components",
+        "@fiftyone/looker": "portal:../../app/packages/looker",
+        "@fiftyone/operators": "portal:../../app/packages/operators",
+        "@fiftyone/plugins": "portal:../../app/packages/plugins",
+        "@fiftyone/relay": "portal:../../app/packages/relay",
+        "@fiftyone/state": "portal:../../app/packages/state",
+        "@fiftyone/utilities": "portal:../../app/packages/utilities",
+        "@niivue/niivue": "^0.67.0",
+        "react": "^18.2.0",
+        "react-dom": "^18.2.0",
+        "recoil": "^0.7.7"
+    },
+    "devDependencies": {
+        "@rollup/plugin-node-resolve": "^15.3.0",
+        "@types/node": "^22.7.6",
+        "@vitejs/plugin-react": "^4.3.2",
+        "@voxel51/fiftyone-js-plugin-build": "^2.0.0",
+        "nodemon": "^3.1.9",
+        "typescript": "^5.6.3",
+        "vite": "^5.4.9",
+        "vite-plugin-externalize-deps": "^0.8.0"
+    },
+    "resolutions": {
+        "@fiftyone/commands": "portal:../../app/packages/commands",
+        "@fiftyone/components": "portal:../../app/packages/components",
+        "@fiftyone/looker": "portal:../../app/packages/looker",
+        "@fiftyone/operators": "portal:../../app/packages/operators",
+        "@fiftyone/plugins": "portal:../../app/packages/plugins",
+        "@fiftyone/relay": "portal:../../app/packages/relay",
+        "@fiftyone/state": "portal:../../app/packages/state",
+        "@fiftyone/utilities": "portal:../../app/packages/utilities"
+    },
+    "packageManager": "yarn@4.9.1+sha512.f95ce356460e05be48d66401c1ae64ef84d163dd689964962c6888a9810865e39097a5e9de748876c2e0bf89b232d583c33982773e9903ae7a76257270986538"
+}

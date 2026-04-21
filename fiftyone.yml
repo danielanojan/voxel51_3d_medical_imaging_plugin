@@ -1,0 +1,7 @@
+name: "@daniel/nifti-3d-viewer"
+description: NIfTI 3D viewer using Niivue embedded in FiftyOne
+version: 1.0.0
+fiftyone:
+  version: "*"
+operators:
+  - get_nifti_urls
