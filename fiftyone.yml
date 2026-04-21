@@ -1,0 +1,7 @@
+name: "@yourorg/nifti-3d-viewer"
+description: NIfTI 3D viewer using Niivue - axial, coronal, sagittal and 3D render
+version: 1.0.0
+fiftyone:
+  version: "*"
+panels:
+  - nifti_3d_viewer
