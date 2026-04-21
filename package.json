@@ -1,7 +1,7 @@
 {
-  "name": "@daniel/brats-slice-viewer",
-  "version": "0.1.0",
-  "description": "BraTS T1C slice viewer panel for FiftyOne",
+  "name": "@daniel/nifti-slice-viewer",
+  "version": "0.2.0",
+  "description": "NIfTI slice viewer panel for FiftyOne",
   "type": "module",
   "main": "src/index.ts",
   "fiftyone": {

@@ -1,4 +1,4 @@
-name: "@daniel/brats-slice-viewer"
+name: "@daniel/nifti-slice-viewer"
 version: 0.2.0
 description: |
   Interactive NIfTI slice viewer. Renders a grid of samples with a global
@@ -15,5 +15,5 @@ operators:
   - load_slice
   - load_slice_batch
 panels:
-  - BratsSliceViewer
+  - NiftiSliceViewer
 js_bundle: dist/index.umd.js

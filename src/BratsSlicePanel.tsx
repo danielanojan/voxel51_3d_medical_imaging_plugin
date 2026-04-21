@@ -108,10 +108,10 @@ function BratsPanel() {
   useEffect(() => { maxSlicesRef.current = maxSlices; }, [maxSlices]);
   useEffect(() => { configRef.current = config; },       [config]);
 
-  const configOp   = useOperatorExecutor("@daniel/brats-slice-viewer/get_slice_viewer_config");
-  const listOp     = useOperatorExecutor("@daniel/brats-slice-viewer/list_slice_samples");
-  const batchOp    = useOperatorExecutor("@daniel/brats-slice-viewer/load_slice_batch");
-  const prefetchOp = useOperatorExecutor("@daniel/brats-slice-viewer/load_slice_batch");
+  const configOp   = useOperatorExecutor("@daniel/nifti-slice-viewer/get_slice_viewer_config");
+  const listOp     = useOperatorExecutor("@daniel/nifti-slice-viewer/list_slice_samples");
+  const batchOp    = useOperatorExecutor("@daniel/nifti-slice-viewer/load_slice_batch");
+  const prefetchOp = useOperatorExecutor("@daniel/nifti-slice-viewer/load_slice_batch");
 
   const lastBatchFlagsRef    = useRef<Record<string, boolean>>({});
   const lastPrefetchRef      = useRef<{ flags: Record<string, boolean>; frame: number }>({ flags: {}, frame: 0 });

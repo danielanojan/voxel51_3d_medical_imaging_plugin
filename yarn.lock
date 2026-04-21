@@ -223,9 +223,9 @@ __metadata:
   languageName: node
   linkType: hard
 
-"@daniel/brats-slice-viewer@workspace:.":
+"@daniel/nifti-slice-viewer@workspace:.":
   version: 0.0.0-use.local
-  resolution: "@daniel/brats-slice-viewer@workspace:."
+  resolution: "@daniel/nifti-slice-viewer@workspace:."
   dependencies:
     "@fiftyone/commands": "portal:../../app/packages/commands"
     "@fiftyone/components": "portal:../../app/packages/components"
@@ -597,17 +597,17 @@ __metadata:
   languageName: node
   linkType: hard
 
-"@fiftyone/commands@portal:../../app/packages/commands::locator=%40daniel%2Fbrats-slice-viewer%40workspace%3A.":
+"@fiftyone/commands@portal:../../app/packages/commands::locator=%40daniel%2Fnifti-slice-viewer%40workspace%3A.":
   version: 0.0.0-use.local
-  resolution: "@fiftyone/commands@portal:../../app/packages/commands::locator=%40daniel%2Fbrats-slice-viewer%40workspace%3A."
+  resolution: "@fiftyone/commands@portal:../../app/packages/commands::locator=%40daniel%2Fnifti-slice-viewer%40workspace%3A."
   peerDependencies:
     react: "*"
   languageName: node
   linkType: soft
 
-"@fiftyone/components@portal:../../app/packages/components::locator=%40daniel%2Fbrats-slice-viewer%40workspace%3A.":
+"@fiftyone/components@portal:../../app/packages/components::locator=%40daniel%2Fnifti-slice-viewer%40workspace%3A.":
   version: 0.0.0-use.local
-  resolution: "@fiftyone/components@portal:../../app/packages/components::locator=%40daniel%2Fbrats-slice-viewer%40workspace%3A."
+  resolution: "@fiftyone/components@portal:../../app/packages/components::locator=%40daniel%2Fnifti-slice-viewer%40workspace%3A."
   dependencies:
     "@emotion/react": "npm:^11.10.4"
     "@emotion/styled": "npm:^11.10.4"
@@ -637,9 +637,9 @@ __metadata:
   languageName: node
   linkType: soft
 
-"@fiftyone/looker@portal:../../app/packages/looker::locator=%40daniel%2Fbrats-slice-viewer%40workspace%3A.":
+"@fiftyone/looker@portal:../../app/packages/looker::locator=%40daniel%2Fnifti-slice-viewer%40workspace%3A.":
   version: 0.0.0-use.local
-  resolution: "@fiftyone/looker@portal:../../app/packages/looker::locator=%40daniel%2Fbrats-slice-viewer%40workspace%3A."
+  resolution: "@fiftyone/looker@portal:../../app/packages/looker::locator=%40daniel%2Fnifti-slice-viewer%40workspace%3A."
   dependencies:
     "@ungap/event-target": "npm:^0.2.2"
     "@xmldom/xmldom": "npm:^0.8.12"
@@ -656,26 +656,26 @@ __metadata:
   languageName: node
   linkType: soft
 
-"@fiftyone/operators@portal:../../app/packages/operators::locator=%40daniel%2Fbrats-slice-viewer%40workspace%3A.":
+"@fiftyone/operators@portal:../../app/packages/operators::locator=%40daniel%2Fnifti-slice-viewer%40workspace%3A.":
   version: 0.0.0-use.local
-  resolution: "@fiftyone/operators@portal:../../app/packages/operators::locator=%40daniel%2Fbrats-slice-viewer%40workspace%3A."
+  resolution: "@fiftyone/operators@portal:../../app/packages/operators::locator=%40daniel%2Fnifti-slice-viewer%40workspace%3A."
   peerDependencies:
     "@mui/icons-material": "*"
     "@mui/material": "*"
   languageName: node
   linkType: soft
 
-"@fiftyone/plugins@portal:../../app/packages/plugins::locator=%40daniel%2Fbrats-slice-viewer%40workspace%3A.":
+"@fiftyone/plugins@portal:../../app/packages/plugins::locator=%40daniel%2Fnifti-slice-viewer%40workspace%3A.":
   version: 0.0.0-use.local
-  resolution: "@fiftyone/plugins@portal:../../app/packages/plugins::locator=%40daniel%2Fbrats-slice-viewer%40workspace%3A."
+  resolution: "@fiftyone/plugins@portal:../../app/packages/plugins::locator=%40daniel%2Fnifti-slice-viewer%40workspace%3A."
   dependencies:
     moment: "npm:^2.29.4"
   languageName: node
   linkType: soft
 
-"@fiftyone/relay@portal:../../app/packages/relay::locator=%40daniel%2Fbrats-slice-viewer%40workspace%3A.":
+"@fiftyone/relay@portal:../../app/packages/relay::locator=%40daniel%2Fnifti-slice-viewer%40workspace%3A.":
   version: 0.0.0-use.local
-  resolution: "@fiftyone/relay@portal:../../app/packages/relay::locator=%40daniel%2Fbrats-slice-viewer%40workspace%3A."
+  resolution: "@fiftyone/relay@portal:../../app/packages/relay::locator=%40daniel%2Fnifti-slice-viewer%40workspace%3A."
   dependencies:
     "@recoiljs/refine": "npm:^0.1.1"
     react-relay: "npm:^14.1.0"
@@ -683,9 +683,9 @@ __metadata:
   languageName: node
   linkType: soft
 
-"@fiftyone/state@portal:../../app/packages/state::locator=%40daniel%2Fbrats-slice-viewer%40workspace%3A.":
+"@fiftyone/state@portal:../../app/packages/state::locator=%40daniel%2Fnifti-slice-viewer%40workspace%3A.":
   version: 0.0.0-use.local
-  resolution: "@fiftyone/state@portal:../../app/packages/state::locator=%40daniel%2Fbrats-slice-viewer%40workspace%3A."
+  resolution: "@fiftyone/state@portal:../../app/packages/state::locator=%40daniel%2Fnifti-slice-viewer%40workspace%3A."
   dependencies:
     "@fiftyone/looker": "npm:*"
     "@fiftyone/relay": "npm:*"
@@ -703,9 +703,9 @@ __metadata:
   languageName: node
   linkType: soft
 
-"@fiftyone/utilities@portal:../../app/packages/utilities::locator=%40daniel%2Fbrats-slice-viewer%40workspace%3A.":
+"@fiftyone/utilities@portal:../../app/packages/utilities::locator=%40daniel%2Fnifti-slice-viewer%40workspace%3A.":
   version: 0.0.0-use.local
-  resolution: "@fiftyone/utilities@portal:../../app/packages/utilities::locator=%40daniel%2Fbrats-slice-viewer%40workspace%3A."
+  resolution: "@fiftyone/utilities@portal:../../app/packages/utilities::locator=%40daniel%2Fnifti-slice-viewer%40workspace%3A."
   dependencies:
     "@chainner/node-path": "npm:^0.1.1"
     "@microsoft/fetch-event-source": "npm:^2.0.1"
