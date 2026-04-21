@@ -225,6 +225,11 @@ def process_patient(patient_dir: str, cfg: dict) -> dict:
             "thumbnail":  thumbnail,
         }
 
+    result["nifti_paths"] = {
+        "t1c": t1c_path if os.path.exists(t1c_path) else None,
+        "seg": seg_path if os.path.exists(seg_path) else None,
+    }
+
     return result
 
 
@@ -259,11 +264,12 @@ def build_dataset(cfg: dict) -> fo.Dataset:
             continue
 
         slice_counts = view_data["slice_counts"]
+        nifti_paths  = view_data["nifti_paths"]
         group   = fo.Group()
         samples = []
 
         for view, data in view_data.items():
-            if view == "slice_counts":
+            if view in ("slice_counts", "nifti_paths"):
                 continue
 
             sample = fo.Sample(
@@ -280,6 +286,11 @@ def build_dataset(cfg: dict) -> fo.Dataset:
                 slices_dir=data["slices_dir"],     # panel reads frame_NNNN.png from here
                 masks_dir=data["masks_dir"],       # panel reads frame_NNNN_mask.png from here
                 mask_targets=cfg["mask_targets"],  # class labels for overlay colours
+                nifti_t1c_path=nifti_paths["t1c"],
+                nifti_seg_path=nifti_paths["seg"],
+                # canonical fields read by the nifti-niivue viewer plugin
+                nifti_path=nifti_paths["t1c"],
+                seg_path=nifti_paths["seg"],
                 has_seg=data["summary"]["has_seg"],
                 has_ncr=data["summary"]["has_ncr"],
                 has_ed=data["summary"]["has_ed"],
