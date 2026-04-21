@@ -1,0 +1,19 @@
+name: "@daniel/nifti-slice-viewer"
+version: 0.2.0
+description: |
+  Interactive NIfTI slice viewer. Renders a grid of samples with a global
+  slice slider, optional view selector (grouped datasets), and toggleable
+  per-class segmentation overlays. Works with any dataset; configure via
+  dataset.info["slice_viewer"].
+fiftyone:
+  version: ">=0.23"
+author: Daniel
+license: MIT
+operators:
+  - get_slice_viewer_config
+  - list_slice_samples
+  - load_slice
+  - load_slice_batch
+panels:
+  - NiftiSliceViewer
+js_bundle: dist/index.umd.js
