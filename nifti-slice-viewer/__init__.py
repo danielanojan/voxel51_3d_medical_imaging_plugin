@@ -26,6 +26,7 @@ import base64
 import io
 import os
 import threading
+from concurrent.futures import ThreadPoolExecutor
 from functools import lru_cache
 
 import numpy as np
@@ -320,25 +321,29 @@ class LoadSliceBatch(foo.Operator):
         cfg = _get_plugin_config(ctx.dataset)
         mask_config = _build_mask_config(cfg["mask_classes"], mask_flags)
 
+        # Resolve dirs sequentially (MongoDB access; not thread-safe to parallelise)
+        dirs_map = {}
         all_dirs = []
-        results = []
         for sid in sample_ids:
             dirs = _get_sample_dirs(ctx.dataset, sid, cfg)
-            if dirs is None:
-                results.append({"sample_id": sid, "ok": False, "error": "missing dirs"})
-                continue
+            if dirs is not None:
+                dirs_map[sid] = dirs
+                all_dirs.append(dirs)
 
-            slices_dir, masks_dir, num_slices = dirs
+        def _render_one(sid):
+            if sid not in dirs_map:
+                return {"sample_id": sid, "ok": False, "error": "missing dirs"}
+            slices_dir, masks_dir, num_slices = dirs_map[sid]
             f = max(0, min(frame, num_slices - 1)) if num_slices else frame
-            all_dirs.append((slices_dir, masks_dir, num_slices))
-
             data_url = _render_slice(slices_dir, masks_dir, f, mask_config)
             if data_url is None:
-                results.append({"sample_id": sid, "ok": False, "error": f"frame {f} not found"})
-                continue
+                return {"sample_id": sid, "ok": False, "error": f"frame {f} not found"}
+            return {"sample_id": sid, "ok": True, "frame": f,
+                    "num_slices": num_slices, "image": data_url}
 
-            results.append({"sample_id": sid, "ok": True, "frame": f,
-                            "num_slices": num_slices, "image": data_url})
+        workers = min(8, max(1, len(sample_ids)))
+        with ThreadPoolExecutor(max_workers=workers) as ex:
+            results = list(ex.map(_render_one, sample_ids))
 
         if all_dirs:
             _prefetch(all_dirs, frame)

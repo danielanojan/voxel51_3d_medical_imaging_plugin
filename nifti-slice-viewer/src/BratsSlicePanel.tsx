@@ -22,6 +22,8 @@ const DEFAULT_SIZE_IDX = 2;
 
 // ── Image cache ────────────────────────────────────────────────────────────────
 const MAX_CACHE_ENTRIES = 2000;
+const CHUNK_SIZE = 20;   // samples per parallel batch call
+const POOL_SIZE  = 4;    // concurrent batch calls in flight
 
 function imgKey(id: string, f: number, flags: Record<string, boolean>): string {
   const flagStr = Object.keys(flags).sort().map(k => +flags[k]).join("");
@@ -181,15 +183,19 @@ function BratsPanel() {
 
   const configOp    = useOperatorExecutor("@daniel/nifti-slice-viewer/get_slice_viewer_config");
   const listOp      = useOperatorExecutor("@daniel/nifti-slice-viewer/list_slice_samples");
-  const batchOp     = useOperatorExecutor("@daniel/nifti-slice-viewer/load_slice_batch");
-  const restBatchOp = useOperatorExecutor("@daniel/nifti-slice-viewer/load_slice_batch");
+  // Pool of POOL_SIZE executors — each handles one chunk of CHUNK_SIZE samples in parallel
+  const c0 = useOperatorExecutor("@daniel/nifti-slice-viewer/load_slice_batch");
+  const c1 = useOperatorExecutor("@daniel/nifti-slice-viewer/load_slice_batch");
+  const c2 = useOperatorExecutor("@daniel/nifti-slice-viewer/load_slice_batch");
+  const c3 = useOperatorExecutor("@daniel/nifti-slice-viewer/load_slice_batch");
   const prefetchOp  = useOperatorExecutor("@daniel/nifti-slice-viewer/load_slice_batch");
   const prefetch2Op = useOperatorExecutor("@daniel/nifti-slice-viewer/load_slice_batch");
 
-  const lastBatchFlagsRef = useRef<Record<string, boolean>>({});
-  const lastRestFlagsRef  = useRef<Record<string, boolean>>({});
-  const pendingRestRef    = useRef<{ ids: string[]; frame: number; flags: Record<string, boolean> }>({ ids: [], frame: 0, flags: {} });
-  const lastPrefetchRef   = useRef<{ flags: Record<string, boolean>; frame: number }>({ flags: {}, frame: 0 });
+  // chunk pool refs
+  const chunkQueueRef    = useRef<Array<{ ids: string[]; frame: number; flags: Record<string, boolean> }>>([]);
+  const chunkFlagsRef    = useRef<Record<string, boolean>>({});
+  const pendingChunksRef = useRef(0);
+  const prefetchFlagsRef = useRef<Record<string, boolean>>({});
 
   const toggleSelected = (id: string) => {
     setSelectedSamples((prev: Map<string, unknown>) => {
@@ -207,49 +213,56 @@ function BratsPanel() {
     }
   };
 
+  const chunkPool = [c0, c1, c2, c3] as const;
+
   const fireBatch = (f: number, flags: Record<string, boolean>) => {
     const list  = samplesRef.current;
     const wSize = windowSizeRef.current;
     if (!list.length) return;
 
-    const windowSamples = list.slice(0, wSize);
-    const restSamples   = list.slice(wSize);
+    // Cancel any queued chunks from a previous batch
+    chunkQueueRef.current = [];
 
-    // Display any cached images from both window and rest immediately
+    // Display cached immediately; collect missing — window-priority order
     const immediate: Record<string, string> = {};
-    const missingWindow: string[] = [];
-    const missingRest:   string[] = [];
+    const windowMissing: string[] = [];
+    const restMissing:   string[] = [];
 
-    for (const s of windowSamples) {
+    for (let i = 0; i < list.length; i++) {
+      const s = list[i];
       const url = cacheGet(imageCache.current, imgKey(s.id, f, flags));
       if (url !== undefined) immediate[s.id] = url;
-      else missingWindow.push(s.id);
-    }
-    for (const s of restSamples) {
-      const url = cacheGet(imageCache.current, imgKey(s.id, f, flags));
-      if (url !== undefined) immediate[s.id] = url;
-      else missingRest.push(s.id);
+      else if (i < wSize) windowMissing.push(s.id);
+      else               restMissing.push(s.id);
     }
 
     if (Object.keys(immediate).length > 0) setImages(prev => ({ ...prev, ...immediate }));
 
-    if (missingWindow.length > 0) {
-      // Phase 1: load priority window; rest will follow in batchOp.result handler
-      setLoadingIds(new Set([...missingWindow, ...missingRest]));
-      setStatus(`Loading ${missingWindow.length} priority · ${missingRest.length} queued, slice ${f}...`);
-      lastBatchFlagsRef.current = flags;
-      pendingRestRef.current = { ids: missingRest, frame: f, flags };
-      batchOp.execute({ sample_ids: missingWindow, frame: f, mask_flags: flags });
-    } else if (missingRest.length > 0) {
-      // Window all cached — go straight to background rest load
-      setLoadingIds(new Set(missingRest));
-      setStatus(`Loading ${missingRest.length} background images, slice ${f}...`);
-      lastRestFlagsRef.current = flags;
-      restBatchOp.execute({ sample_ids: missingRest, frame: f, mask_flags: flags });
-    } else {
+    const missing = [...windowMissing, ...restMissing];
+    if (missing.length === 0) {
       setLoadingIds(new Set());
       setStatus(`${list.length} images (all cached)`);
+      return;
     }
+
+    // Slice into chunks of CHUNK_SIZE
+    const chunks: string[][] = [];
+    for (let i = 0; i < missing.length; i += CHUNK_SIZE)
+      chunks.push(missing.slice(i, i + CHUNK_SIZE));
+
+    setLoadingIds(new Set(missing));
+    setStatus(`Loading ${missing.length} images · ${chunks.length} chunk${chunks.length !== 1 ? "s" : ""} · slice ${f}...`);
+
+    chunkFlagsRef.current   = flags;
+    pendingChunksRef.current = chunks.length;
+
+    // Queue overflow chunks (beyond pool capacity)
+    chunkQueueRef.current = chunks.slice(POOL_SIZE).map(ids => ({ ids, frame: f, flags }));
+
+    // Dispatch first POOL_SIZE chunks immediately (one per pool slot)
+    chunks.slice(0, POOL_SIZE).forEach((ids, i) =>
+      chunkPool[i].execute({ sample_ids: ids, frame: f, mask_flags: flags })
+    );
   };
 
   const reList = (v: string) => {
@@ -306,81 +319,68 @@ function BratsPanel() {
     fireBatch(Math.min(frameRef.current, maxSlicesRef.current - 1), maskFlagsRef.current);
   }, [listOp.result]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  // Handle window batch result — display images, then fire rest batch + prefetch in parallel
-  useEffect(() => {
-    const res = batchOp.result as any;
+  // Shared pool chunk result handler — display images, dequeue next chunk, fire prefetch when done
+  const handleChunkResult = (res: any, poolIdx: number) => {
     if (!res?.ok) return;
+    const flags   = chunkFlagsRef.current;
     const updated: Record<string, string> = {};
-    let ok = 0;
-    const flags = lastBatchFlagsRef.current;
     const loadedIds = new Set<string>();
+
     for (const r of res.results ?? []) {
       if (r.ok) {
         cacheSet(imageCache.current, imgKey(r.sample_id, r.frame, flags), r.image);
-        updated[r.sample_id] = r.image;
-        loadedIds.add(r.sample_id);
-        ok++;
+        // Only display if result is for the frame the user is currently on
+        if (r.frame === frameRef.current) {
+          updated[r.sample_id] = r.image;
+          loadedIds.add(r.sample_id);
+        }
       }
     }
-    setImages(prev => ({ ...prev, ...updated }));
-    setLoadingIds(prev => { const n = new Set(prev); loadedIds.forEach(id => n.delete(id)); return n; });
 
-    // Phase 2: fire background rest batch — skip if user already scrubbed to a new frame
-    const { ids: restIds, frame: restFrame, flags: restFlags } = pendingRestRef.current;
-    if (restFrame !== frameRef.current) return;
-    const stillMissing = restIds.filter(id => !imageCache.current.has(imgKey(id, restFrame, restFlags)));
-    if (stillMissing.length > 0) {
-      setStatus(`${ok} loaded · loading ${stillMissing.length} in background...`);
-      lastRestFlagsRef.current = restFlags;
-      restBatchOp.execute({ sample_ids: stillMissing, frame: restFrame, mask_flags: restFlags });
-    } else {
-      setStatus(`${ok} images loaded`);
+    if (Object.keys(updated).length > 0) setImages(prev => ({ ...prev, ...updated }));
+    if (loadedIds.size > 0)
+      setLoadingIds(prev => { const n = new Set(prev); loadedIds.forEach(id => n.delete(id)); return n; });
+
+    pendingChunksRef.current = Math.max(0, pendingChunksRef.current - 1);
+
+    // Dequeue the next chunk and dispatch it on this pool slot
+    const next = chunkQueueRef.current.shift();
+    if (next) {
+      chunkPool[poolIdx].execute({ sample_ids: next.ids, frame: next.frame, mask_flags: next.flags });
     }
 
-    // Directional prefetch runs in parallel with rest batch
-    const dir  = directionRef.current;
-    const cur  = frameRef.current;
-    const max  = maxSlicesRef.current;
-    const list = samplesRef.current;
-    if (!list.length) return;
+    // All chunks done — update status and fire directional prefetch
+    if (pendingChunksRef.current === 0) {
+      setLoadingIds(new Set());
+      setStatus(`${samplesRef.current.length} images loaded`);
 
-    const tryPrefetch = (op: typeof prefetchOp, f: number) => {
-      if (f < 0 || f >= max || op.isExecuting) return;
-      const notCached = list.filter(s => !imageCache.current.has(imgKey(s.id, f, flags)));
-      if (!notCached.length) return;
-      lastPrefetchRef.current = { flags, frame: f };
-      op.execute({ sample_ids: notCached.map(s => s.id), frame: f, mask_flags: flags });
-    };
+      const dir  = directionRef.current;
+      const cur  = frameRef.current;
+      const max  = maxSlicesRef.current;
+      const list = samplesRef.current;
+      if (!list.length) return;
 
-    tryPrefetch(prefetchOp,  cur + dir);
-    tryPrefetch(prefetch2Op, cur + dir * 2);
-  }, [batchOp.result]); // eslint-disable-line react-hooks/exhaustive-deps
-
-  // Handle background rest batch result
-  useEffect(() => {
-    const res = restBatchOp.result as any;
-    if (!res?.ok) return;
-    const flags = lastRestFlagsRef.current;
-    const updated: Record<string, string> = {};
-    const loadedIds = new Set<string>();
-    let ok = 0;
-    for (const r of res.results ?? []) {
-      if (r.ok) {
-        cacheSet(imageCache.current, imgKey(r.sample_id, r.frame, flags), r.image);
-        updated[r.sample_id] = r.image;
-        loadedIds.add(r.sample_id);
-        ok++;
-      }
+      const tryPrefetch = (op: typeof prefetchOp, f: number) => {
+        if (f < 0 || f >= max || op.isExecuting) return;
+        const notCached = list.filter(s => !imageCache.current.has(imgKey(s.id, f, flags)));
+        if (!notCached.length) return;
+        prefetchFlagsRef.current = flags;
+        op.execute({ sample_ids: notCached.map(s => s.id), frame: f, mask_flags: flags });
+      };
+      tryPrefetch(prefetchOp,  cur + dir);
+      tryPrefetch(prefetch2Op, cur + dir * 2);
     }
-    setImages(prev => ({ ...prev, ...updated }));
-    setLoadingIds(prev => { const n = new Set(prev); loadedIds.forEach(id => n.delete(id)); return n; });
-    setStatus(`${samplesRef.current.length} images loaded`);
-  }, [restBatchOp.result]); // eslint-disable-line react-hooks/exhaustive-deps
+  };
 
-  // Shared handler for prefetch results — populate cache; display if user is on that frame
+  useEffect(() => handleChunkResult(c0.result, 0), [c0.result]); // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(() => handleChunkResult(c1.result, 1), [c1.result]); // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(() => handleChunkResult(c2.result, 2), [c2.result]); // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(() => handleChunkResult(c3.result, 3), [c3.result]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Prefetch result handler — populate cache; display if user is still on that frame
   const handlePrefetchResult = (res: any) => {
     if (!res?.ok) return;
-    const { flags } = lastPrefetchRef.current;
+    const flags = prefetchFlagsRef.current;
     const displayNow: Record<string, string> = {};
     const loadedIds = new Set<string>();
     for (const r of res.results ?? []) {
@@ -404,7 +404,7 @@ function BratsPanel() {
     return () => clearTimeout(t);
   }, [frame, maskFlags]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  const isLoading    = !config || listOp.isExecuting || batchOp.isExecuting;
+  const isLoading    = !config || listOp.isExecuting || pendingChunksRef.current > 0;
   const sliderMax    = Math.max(maxSlices - 1, 0);
   const clampedFrame = Math.min(frame, sliderMax);
 
