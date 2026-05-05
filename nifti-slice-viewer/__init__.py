@@ -25,6 +25,7 @@ Example custom config:
 import base64
 import io
 import os
+import threading
 from functools import lru_cache
 
 import numpy as np
@@ -49,15 +50,25 @@ _DEFAULT_CONFIG = {
     ],
 }
 
+_FALLBACK_COLORS = [
+    [255,  68,  68], [255, 165,   0], [255,   0, 255],
+    [  0, 200, 255], [  0, 255, 128], [255, 255,   0],
+]
+
 
 def _get_plugin_config(dataset):
     info = getattr(dataset, "info", None) or {}
     cfg = dict(_DEFAULT_CONFIG)
     cfg.update(info.get("slice_viewer", {}))
+    # ensure every mask class has a color (dataset.info may omit it)
+    for i, cls in enumerate(cfg.get("mask_classes", [])):
+        if "color" not in cls:
+            cls["color"] = _FALLBACK_COLORS[i % len(_FALLBACK_COLORS)]
     return cfg
 
 
 # ── File reading (cached) ──────────────────────────────────────────────────────
+# maxsize=2048: covers ~8 patients × 256 slices for smooth scrubbing
 
 @lru_cache(maxsize=2048)
 def _read_slice_png(path):
@@ -66,7 +77,7 @@ def _read_slice_png(path):
     return np.asarray(Image.open(path).convert("L"), dtype=np.uint8)
 
 
-@lru_cache(maxsize=4096)
+@lru_cache(maxsize=2048)
 def _read_mask_png(path):
     if not os.path.exists(path):
         return None
@@ -74,37 +85,29 @@ def _read_mask_png(path):
 
 
 # ── Compositing ────────────────────────────────────────────────────────────────
+# Layers 1 & 2 cache the raw disk reads. Everything above that (stack, overlay,
+# encode) is ~4ms total and not worth the memory cost of caching intermediates.
 
-def _composite_slice(slices_dir, masks_dir, frame_idx, mask_config):
-    """
-    mask_config: tuple of (name, pixel_value, r, g, b, enabled) per class.
-    Fully hashable so _composite_and_encode can be lru_cached.
-    """
+def _render_slice(slices_dir, masks_dir, frame_idx, mask_config):
     slice_path = os.path.join(slices_dir, f"frame_{frame_idx:04d}.png")
     base_gray = _read_slice_png(slice_path)
     if base_gray is None:
         return None
 
-    base_rgb = np.stack([base_gray] * 3, axis=-1).astype(np.float32)
+    out = np.stack([base_gray] * 3, axis=-1).astype(np.float32)
 
     mask_path = os.path.join(masks_dir, f"frame_{frame_idx:04d}_mask.png")
     mask = _read_mask_png(mask_path)
-    if mask is None:
-        return Image.fromarray(np.clip(base_rgb, 0, 255).astype(np.uint8), "RGB")
+    if mask is not None:
+        for _name, pixel_value, r, g, b, enabled in mask_config:
+            if not enabled:
+                continue
+            on = mask == pixel_value
+            if not on.any():
+                continue
+            out[on] = (1.0 - OVERLAY_ALPHA) * out[on] + OVERLAY_ALPHA * np.array([r, g, b], dtype=np.float32)
 
-    for _name, pixel_value, r, g, b, enabled in mask_config:
-        if not enabled:
-            continue
-        on = mask == pixel_value
-        if not on.any():
-            continue
-        color = np.array([r, g, b], dtype=np.float32)
-        base_rgb[on] = (1.0 - OVERLAY_ALPHA) * base_rgb[on] + OVERLAY_ALPHA * color
-
-    return Image.fromarray(np.clip(base_rgb, 0, 255).astype(np.uint8), "RGB")
-
-
-def _image_to_data_url(img):
+    img = Image.fromarray(np.clip(out, 0, 255).astype(np.uint8), "RGB")
     w, h = img.size
     if max(w, h) > ENCODE_MAX_DIM:
         scale = ENCODE_MAX_DIM / max(w, h)
@@ -114,10 +117,18 @@ def _image_to_data_url(img):
     return f"data:image/jpeg;base64,{base64.b64encode(buf.getvalue()).decode('ascii')}"
 
 
-@lru_cache(maxsize=8192)
-def _composite_and_encode(slices_dir, masks_dir, frame_idx, mask_config):
-    img = _composite_slice(slices_dir, masks_dir, frame_idx, mask_config)
-    return _image_to_data_url(img) if img is not None else None
+# ── Prefetch ───────────────────────────────────────────────────────────────────
+
+def _prefetch(dirs_list, frame, radius=3):
+    """Warm layers 1 & 2 for adjacent frames in a background thread."""
+    def _warm():
+        for slices_dir, masks_dir, num_slices in dirs_list:
+            lo = max(0, frame - radius)
+            hi = min(num_slices - 1, frame + radius) if num_slices else frame + radius
+            for f in range(lo, hi + 1):
+                _read_slice_png(os.path.join(slices_dir, f"frame_{f:04d}.png"))
+                _read_mask_png(os.path.join(masks_dir, f"frame_{f:04d}_mask.png"))
+    threading.Thread(target=_warm, daemon=True).start()
 
 
 # ── Helpers ────────────────────────────────────────────────────────────────────
@@ -136,7 +147,7 @@ def _get_sample_dirs(dataset, sample_id, config):
 
 
 def _build_mask_config(mask_classes, mask_flags):
-    """Convert dataset mask class list + per-request flags into a hashable tuple."""
+    """Hashable tuple of (name, pixel_value, r, g, b, enabled) per mask class."""
     return tuple(
         (
             cls["name"],
@@ -208,18 +219,27 @@ class ListSliceSamples(foo.Operator):
         is_grouped  = getattr(ctx.dataset, "media_type", None) == "group"
 
         if is_grouped and view_filter:
-            base = ctx.dataset.select_group_slices([view_filter])
+            try:
+                # ctx.view already has App sidebar filters applied (scoped to the
+                # default group slice). Bridge to the target slice via group IDs so
+                # filters propagate correctly across axial/coronal/sagittal.
+                group_ids = ctx.view.distinct("group.id")
+                sample_collection = (
+                    ctx.dataset
+                    .select_group_slices([view_filter])
+                    .select_groups(group_ids)
+                )
+            except Exception:
+                sample_collection = ctx.dataset.select_group_slices([view_filter])
         else:
-            base = ctx.dataset
-
-        try:
-            sample_collection = fosv.get_extended_view(
-                base,
-                filters=ctx.request_params.get("filters"),
-                extended_stages=ctx.request_params.get("extended"),
-            )
-        except Exception:
-            sample_collection = base
+            try:
+                sample_collection = fosv.get_extended_view(
+                    ctx.dataset,
+                    filters=ctx.request_params.get("filters"),
+                    extended_stages=ctx.request_params.get("extended"),
+                )
+            except Exception:
+                sample_collection = ctx.dataset
 
         _SKIP = {"_id", "frames", "id", "group"}
 
@@ -268,7 +288,7 @@ class LoadSlice(foo.Operator):
         frame = max(0, min(frame, num_slices - 1)) if num_slices else frame
 
         mask_config = _build_mask_config(cfg["mask_classes"], mask_flags)
-        data_url = _composite_and_encode(slices_dir, masks_dir, frame, mask_config)
+        data_url = _render_slice(slices_dir, masks_dir, frame, mask_config)
         if data_url is None:
             return {"ok": False, "error": f"frame {frame} not found"}
 
@@ -300,6 +320,7 @@ class LoadSliceBatch(foo.Operator):
         cfg = _get_plugin_config(ctx.dataset)
         mask_config = _build_mask_config(cfg["mask_classes"], mask_flags)
 
+        all_dirs = []
         results = []
         for sid in sample_ids:
             dirs = _get_sample_dirs(ctx.dataset, sid, cfg)
@@ -309,14 +330,18 @@ class LoadSliceBatch(foo.Operator):
 
             slices_dir, masks_dir, num_slices = dirs
             f = max(0, min(frame, num_slices - 1)) if num_slices else frame
+            all_dirs.append((slices_dir, masks_dir, num_slices))
 
-            data_url = _composite_and_encode(slices_dir, masks_dir, f, mask_config)
+            data_url = _render_slice(slices_dir, masks_dir, f, mask_config)
             if data_url is None:
                 results.append({"sample_id": sid, "ok": False, "error": f"frame {f} not found"})
                 continue
 
             results.append({"sample_id": sid, "ok": True, "frame": f,
                             "num_slices": num_slices, "image": data_url})
+
+        if all_dirs:
+            _prefetch(all_dirs, frame)
 
         return {"ok": True, "results": results}
 

@@ -4,6 +4,18 @@ import { useOperatorExecutor } from "@fiftyone/operators";
 import React, { useEffect, useRef, useState } from "react";
 import { useRecoilState, useRecoilValue } from "recoil";
 
+const SHIMMER_CSS = `
+@keyframes shimmer {
+  0%   { background-position: -400px 0; }
+  100% { background-position:  400px 0; }
+}
+.slice-shimmer {
+  background: linear-gradient(90deg, #1a1a1a 25%, #2a2a2a 50%, #1a1a1a 75%);
+  background-size: 800px 100%;
+  animation: shimmer 1.4s infinite linear;
+}
+`;
+
 // Discrete zoom steps (column min-width px): small → large
 const SIZES = [90, 130, 180, 240, 320, 420, 560];
 const DEFAULT_SIZE_IDX = 2;
@@ -16,10 +28,19 @@ function imgKey(id: string, f: number, flags: Record<string, boolean>): string {
   return `${id}:${f}:${flagStr}`;
 }
 
+// LRU cache: Map insertion order tracks recency. get() moves key to end (MRU),
+// set() re-inserts to update order, eviction always removes the first key (LRU).
+function cacheGet(cache: Map<string, string>, key: string): string | undefined {
+  const val = cache.get(key);
+  if (val !== undefined) { cache.delete(key); cache.set(key, val); }
+  return val;
+}
+
 function cacheSet(cache: Map<string, string>, key: string, value: string): void {
+  if (cache.has(key)) cache.delete(key);
   if (cache.size >= MAX_CACHE_ENTRIES) {
-    const oldest = cache.keys().next();
-    if (!oldest.done) cache.delete(oldest.value);
+    const lru = cache.keys().next();
+    if (!lru.done) cache.delete(lru.value);
   }
   cache.set(key, value);
 }
@@ -41,6 +62,20 @@ interface SliceViewerConfig {
 type Sample = Record<string, unknown> & { id: string; group_id: string };
 
 // ── Field bubbles ──────────────────────────────────────────────────────────────
+
+// In FiftyOne grouped datasets, activePaths may be slice-prefixed
+// (e.g. "axial.patient_id"). Strip the prefix so coronal/sagittal samples
+// (whose dicts use bare field names) still match.
+function resolveField(sample: Sample, path: string): unknown {
+  if (path in sample) return sample[path];
+  const dot = path.indexOf(".");
+  if (dot !== -1) {
+    const bare = path.slice(dot + 1);
+    if (bare in sample) return sample[bare];
+  }
+  return undefined;
+}
+
 function buildTags(
   activePaths: string[],
   sample: Sample,
@@ -49,12 +84,12 @@ function buildTags(
   if (!activePaths?.length || !coloring) return [];
   const tags: Array<{ color: string; title: string; value: string }> = [];
   for (const path of activePaths) {
-    if (path === "tags") {
+    if (path === "tags" || path.endsWith(".tags")) {
       for (const tag of (sample.tags as string[]) ?? []) {
         tags.push({ color: getColor(coloring.pool, coloring.seed, tag), title: tag, value: tag });
       }
     } else {
-      const raw = sample[path];
+      const raw = resolveField(sample, path);
       if (raw === undefined || raw === null) continue;
       const color = getColor(coloring.pool, coloring.seed,
         coloring.by === "field" ? path : String(raw));
@@ -87,34 +122,74 @@ function BratsPanel() {
   // Plugin config — loaded from backend on mount, drives all dynamic behaviour
   const [config, setConfig] = useState<SliceViewerConfig | null>(null);
 
-  const [activeView, setActiveView] = useState<string>("");
-  const [frame,      setFrame]      = useState(0);
-  const [maxSlices,  setMaxSlices]  = useState(1);
-  const [maskFlags,  setMaskFlags]  = useState<Record<string, boolean>>({});
-  const [sizeIdx,    setSizeIdx]    = useState(DEFAULT_SIZE_IDX);
+  const [activeView,   setActiveView]   = useState<string>("");
+  const [frame,        setFrame]        = useState(0);
+  const [maxSlices,    setMaxSlices]    = useState(1);
+  const [maskFlags,    setMaskFlags]    = useState<Record<string, boolean>>({});
+  const [sizeIdx,      setSizeIdx]      = useState(DEFAULT_SIZE_IDX);
+  const [visibleCount, setVisibleCount] = useState(20);
   const colSize = SIZES[sizeIdx];
-  const [samples, setSamples] = useState<Sample[]>([]);
-  const [images,  setImages]  = useState<Record<string, string>>({});
-  const [status,  setStatus]  = useState("Loading config...");
+  const [samples,    setSamples]    = useState<Sample[]>([]);
+  const [images,     setImages]     = useState<Record<string, string>>({});
+  const [loadingIds, setLoadingIds] = useState<Set<string>>(new Set());
+  const [status,     setStatus]     = useState("Loading config...");
+  const directionRef  = useRef<1 | -1>(1);
 
-  const imageCache = useRef<Map<string, string>>(new Map());
-  const samplesRef   = useRef<Sample[]>([]);
-  const frameRef     = useRef(frame);
-  const maskFlagsRef = useRef(maskFlags);
-  const maxSlicesRef = useRef(maxSlices);
-  const configRef    = useRef<SliceViewerConfig | null>(null);
-  useEffect(() => { frameRef.current = frame; },         [frame]);
-  useEffect(() => { maskFlagsRef.current = maskFlags; }, [maskFlags]);
-  useEffect(() => { maxSlicesRef.current = maxSlices; }, [maxSlices]);
-  useEffect(() => { configRef.current = config; },       [config]);
+  const imageCache     = useRef<Map<string, string>>(new Map());
+  const gridScrollRef  = useRef<HTMLDivElement>(null);
+  const samplesRef     = useRef<Sample[]>([]);
+  const frameRef       = useRef(frame);
+  const maskFlagsRef   = useRef(maskFlags);
+  const maxSlicesRef   = useRef(maxSlices);
+  const windowSizeRef  = useRef(visibleCount);
+  const colSizeRef     = useRef(colSize);
+  const configRef      = useRef<SliceViewerConfig | null>(null);
+  useEffect(() => { frameRef.current = frame; },             [frame]);
+  useEffect(() => { maskFlagsRef.current = maskFlags; },     [maskFlags]);
+  useEffect(() => { maxSlicesRef.current = maxSlices; },     [maxSlices]);
+  useEffect(() => { windowSizeRef.current = visibleCount; }, [visibleCount]);
+  useEffect(() => { colSizeRef.current = colSize; },         [colSize]);
+  useEffect(() => { configRef.current = config; },           [config]);
 
-  const configOp   = useOperatorExecutor("@daniel/nifti-slice-viewer/get_slice_viewer_config");
-  const listOp     = useOperatorExecutor("@daniel/nifti-slice-viewer/list_slice_samples");
-  const batchOp    = useOperatorExecutor("@daniel/nifti-slice-viewer/load_slice_batch");
-  const prefetchOp = useOperatorExecutor("@daniel/nifti-slice-viewer/load_slice_batch");
+  // Auto-calculate how many tiles are visible in the scroll viewport
+  useEffect(() => {
+    const el = gridScrollRef.current;
+    if (!el) return;
+    const compute = () => {
+      const GAP = 6;
+      const w = el.clientWidth;
+      const h = el.clientHeight;
+      const cols = Math.max(1, Math.floor((w + GAP) / (colSizeRef.current + GAP)));
+      const rows = Math.max(1, Math.ceil(h / (colSizeRef.current + GAP)));
+      setVisibleCount(cols * rows);
+    };
+    compute();
+    const ro = new ResizeObserver(compute);
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
-  const lastBatchFlagsRef    = useRef<Record<string, boolean>>({});
-  const lastPrefetchRef      = useRef<{ flags: Record<string, boolean>; frame: number }>({ flags: {}, frame: 0 });
+  // Recompute when tile size changes (colSize drives both cols and row height)
+  useEffect(() => {
+    const el = gridScrollRef.current;
+    if (!el) return;
+    const GAP = 6;
+    const cols = Math.max(1, Math.floor((el.clientWidth + GAP) / (colSize + GAP)));
+    const rows = Math.max(1, Math.ceil(el.clientHeight / (colSize + GAP)));
+    setVisibleCount(cols * rows);
+  }, [colSize]);
+
+  const configOp    = useOperatorExecutor("@daniel/nifti-slice-viewer/get_slice_viewer_config");
+  const listOp      = useOperatorExecutor("@daniel/nifti-slice-viewer/list_slice_samples");
+  const batchOp     = useOperatorExecutor("@daniel/nifti-slice-viewer/load_slice_batch");
+  const restBatchOp = useOperatorExecutor("@daniel/nifti-slice-viewer/load_slice_batch");
+  const prefetchOp  = useOperatorExecutor("@daniel/nifti-slice-viewer/load_slice_batch");
+  const prefetch2Op = useOperatorExecutor("@daniel/nifti-slice-viewer/load_slice_batch");
+
+  const lastBatchFlagsRef = useRef<Record<string, boolean>>({});
+  const lastRestFlagsRef  = useRef<Record<string, boolean>>({});
+  const pendingRestRef    = useRef<{ ids: string[]; frame: number; flags: Record<string, boolean> }>({ ids: [], frame: 0, flags: {} });
+  const lastPrefetchRef   = useRef<{ flags: Record<string, boolean>; frame: number }>({ flags: {}, frame: 0 });
 
   const toggleSelected = (id: string) => {
     setSelectedSamples((prev: Map<string, unknown>) => {
@@ -133,21 +208,46 @@ function BratsPanel() {
   };
 
   const fireBatch = (f: number, flags: Record<string, boolean>) => {
-    const list = samplesRef.current;
+    const list  = samplesRef.current;
+    const wSize = windowSizeRef.current;
     if (!list.length) return;
+
+    const windowSamples = list.slice(0, wSize);
+    const restSamples   = list.slice(wSize);
+
+    // Display any cached images from both window and rest immediately
     const immediate: Record<string, string> = {};
-    const missing: string[] = [];
-    for (const s of list) {
-      const url = imageCache.current.get(imgKey(s.id, f, flags));
+    const missingWindow: string[] = [];
+    const missingRest:   string[] = [];
+
+    for (const s of windowSamples) {
+      const url = cacheGet(imageCache.current, imgKey(s.id, f, flags));
       if (url !== undefined) immediate[s.id] = url;
-      else missing.push(s.id);
+      else missingWindow.push(s.id);
     }
+    for (const s of restSamples) {
+      const url = cacheGet(imageCache.current, imgKey(s.id, f, flags));
+      if (url !== undefined) immediate[s.id] = url;
+      else missingRest.push(s.id);
+    }
+
     if (Object.keys(immediate).length > 0) setImages(prev => ({ ...prev, ...immediate }));
-    if (missing.length > 0) {
-      setStatus(`Loading ${missing.length}/${list.length} images, slice ${f}...`);
+
+    if (missingWindow.length > 0) {
+      // Phase 1: load priority window; rest will follow in batchOp.result handler
+      setLoadingIds(new Set([...missingWindow, ...missingRest]));
+      setStatus(`Loading ${missingWindow.length} priority · ${missingRest.length} queued, slice ${f}...`);
       lastBatchFlagsRef.current = flags;
-      batchOp.execute({ sample_ids: missing, frame: f, mask_flags: flags });
+      pendingRestRef.current = { ids: missingRest, frame: f, flags };
+      batchOp.execute({ sample_ids: missingWindow, frame: f, mask_flags: flags });
+    } else if (missingRest.length > 0) {
+      // Window all cached — go straight to background rest load
+      setLoadingIds(new Set(missingRest));
+      setStatus(`Loading ${missingRest.length} background images, slice ${f}...`);
+      lastRestFlagsRef.current = flags;
+      restBatchOp.execute({ sample_ids: missingRest, frame: f, mask_flags: flags });
     } else {
+      setLoadingIds(new Set());
       setStatus(`${list.length} images (all cached)`);
     }
   };
@@ -206,50 +306,97 @@ function BratsPanel() {
     fireBatch(Math.min(frameRef.current, maxSlicesRef.current - 1), maskFlagsRef.current);
   }, [listOp.result]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  // Handle batch result — populate cache, display images, trigger prefetch
+  // Handle window batch result — display images, then fire rest batch + prefetch in parallel
   useEffect(() => {
     const res = batchOp.result as any;
     if (!res?.ok) return;
     const updated: Record<string, string> = {};
     let ok = 0;
     const flags = lastBatchFlagsRef.current;
+    const loadedIds = new Set<string>();
     for (const r of res.results ?? []) {
       if (r.ok) {
         cacheSet(imageCache.current, imgKey(r.sample_id, r.frame, flags), r.image);
         updated[r.sample_id] = r.image;
+        loadedIds.add(r.sample_id);
         ok++;
       }
     }
-    setStatus(`${ok} images loaded`);
     setImages(prev => ({ ...prev, ...updated }));
+    setLoadingIds(prev => { const n = new Set(prev); loadedIds.forEach(id => n.delete(id)); return n; });
 
-    // Prefetch next frame so forward scrubbing feels instant
-    const nextF = frameRef.current + 1;
-    if (nextF < maxSlicesRef.current && samplesRef.current.length > 0 && !prefetchOp.isExecuting) {
-      const notCached = samplesRef.current.filter(
-        s => !imageCache.current.has(imgKey(s.id, nextF, flags))
-      );
-      if (notCached.length > 0) {
-        lastPrefetchRef.current = { flags, frame: nextF };
-        prefetchOp.execute({ sample_ids: notCached.map(s => s.id), frame: nextF, mask_flags: flags });
-      }
+    // Phase 2: fire background rest batch — skip if user already scrubbed to a new frame
+    const { ids: restIds, frame: restFrame, flags: restFlags } = pendingRestRef.current;
+    if (restFrame !== frameRef.current) return;
+    const stillMissing = restIds.filter(id => !imageCache.current.has(imgKey(id, restFrame, restFlags)));
+    if (stillMissing.length > 0) {
+      setStatus(`${ok} loaded · loading ${stillMissing.length} in background...`);
+      lastRestFlagsRef.current = restFlags;
+      restBatchOp.execute({ sample_ids: stillMissing, frame: restFrame, mask_flags: restFlags });
+    } else {
+      setStatus(`${ok} images loaded`);
     }
+
+    // Directional prefetch runs in parallel with rest batch
+    const dir  = directionRef.current;
+    const cur  = frameRef.current;
+    const max  = maxSlicesRef.current;
+    const list = samplesRef.current;
+    if (!list.length) return;
+
+    const tryPrefetch = (op: typeof prefetchOp, f: number) => {
+      if (f < 0 || f >= max || op.isExecuting) return;
+      const notCached = list.filter(s => !imageCache.current.has(imgKey(s.id, f, flags)));
+      if (!notCached.length) return;
+      lastPrefetchRef.current = { flags, frame: f };
+      op.execute({ sample_ids: notCached.map(s => s.id), frame: f, mask_flags: flags });
+    };
+
+    tryPrefetch(prefetchOp,  cur + dir);
+    tryPrefetch(prefetch2Op, cur + dir * 2);
   }, [batchOp.result]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  // Handle prefetch result — populate cache; display if user is already on that frame
+  // Handle background rest batch result
   useEffect(() => {
-    const res = prefetchOp.result as any;
+    const res = restBatchOp.result as any;
     if (!res?.ok) return;
-    const { flags } = lastPrefetchRef.current;
-    const displayNow: Record<string, string> = {};
+    const flags = lastRestFlagsRef.current;
+    const updated: Record<string, string> = {};
+    const loadedIds = new Set<string>();
+    let ok = 0;
     for (const r of res.results ?? []) {
       if (r.ok) {
         cacheSet(imageCache.current, imgKey(r.sample_id, r.frame, flags), r.image);
-        if (r.frame === frameRef.current) displayNow[r.sample_id] = r.image;
+        updated[r.sample_id] = r.image;
+        loadedIds.add(r.sample_id);
+        ok++;
       }
     }
-    if (Object.keys(displayNow).length > 0) setImages(prev => ({ ...prev, ...displayNow }));
-  }, [prefetchOp.result]); // eslint-disable-line react-hooks/exhaustive-deps
+    setImages(prev => ({ ...prev, ...updated }));
+    setLoadingIds(prev => { const n = new Set(prev); loadedIds.forEach(id => n.delete(id)); return n; });
+    setStatus(`${samplesRef.current.length} images loaded`);
+  }, [restBatchOp.result]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Shared handler for prefetch results — populate cache; display if user is on that frame
+  const handlePrefetchResult = (res: any) => {
+    if (!res?.ok) return;
+    const { flags } = lastPrefetchRef.current;
+    const displayNow: Record<string, string> = {};
+    const loadedIds = new Set<string>();
+    for (const r of res.results ?? []) {
+      if (r.ok) {
+        cacheSet(imageCache.current, imgKey(r.sample_id, r.frame, flags), r.image);
+        if (r.frame === frameRef.current) { displayNow[r.sample_id] = r.image; loadedIds.add(r.sample_id); }
+      }
+    }
+    if (Object.keys(displayNow).length > 0) {
+      setImages(prev => ({ ...prev, ...displayNow }));
+      setLoadingIds(prev => { const n = new Set(prev); loadedIds.forEach(id => n.delete(id)); return n; });
+    }
+  };
+
+  useEffect(() => handlePrefetchResult(prefetchOp.result),  [prefetchOp.result]);  // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(() => handlePrefetchResult(prefetch2Op.result), [prefetch2Op.result]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Reload images on slice / mask change (debounced)
   useEffect(() => {
@@ -266,6 +413,8 @@ function BratsPanel() {
   }
 
   return (
+    <>
+    <style>{SHIMMER_CSS}</style>
     <div style={{ display: "flex", flexDirection: "column", height: "100%",
       overflow: "hidden", padding: "12px 16px", fontSize: "13px",
       color: "#ddd", background: "#1a1a1a", boxSizing: "border-box" }}>
@@ -303,7 +452,11 @@ function BratsPanel() {
           <span style={{ whiteSpace: "nowrap", fontSize: 12, color: "#888" }}>Slice</span>
           <input type="range" min={0} max={sliderMax} value={clampedFrame}
             style={{ flex: 1, accentColor: "#f97316" }}
-            onChange={e => setFrame(Number(e.target.value))} />
+            onChange={e => {
+              const next = Number(e.target.value);
+              directionRef.current = next >= frameRef.current ? 1 : -1;
+              setFrame(next);
+            }} />
           <span style={{ minWidth: "7ch", textAlign: "right", fontSize: 12,
             fontVariantNumeric: "tabular-nums", color: "#aaa" }}>
             {clampedFrame}/{sliderMax}
@@ -346,7 +499,7 @@ function BratsPanel() {
       </div>
 
       {/* Image grid */}
-      <div style={{ flex: 1, overflowY: "auto", minHeight: 0 }}>
+      <div ref={gridScrollRef} style={{ flex: 1, overflowY: "auto", minHeight: 0 }}>
         <div style={{ paddingTop: 10,
           display: "grid",
           gridTemplateColumns: `repeat(auto-fill, minmax(${colSize}px, 1fr))`,
@@ -382,16 +535,12 @@ function BratsPanel() {
                     )}
                     {images[s.id]
                       ? <img src={images[s.id]} alt={s.id}
-                          style={{ width: "100%", height: "auto",
-                            display: "block", imageRendering: "auto" }} />
-                      : <div style={{
-                          aspectRatio: "1",
-                          background: "#111",
-                          display: "flex", alignItems: "center",
-                          justifyContent: "center",
-                          color: "#2a2a2a", fontSize: 20 }}>
-                          {isLoading ? "." : "-"}
-                        </div>
+                          style={{ width: "100%", height: "auto", display: "block",
+                            imageRendering: "auto",
+                            opacity: loadingIds.has(s.id) ? 0.45 : 1,
+                            transition: "opacity 0.15s ease" }} />
+                      : <div className="slice-shimmer"
+                          style={{ aspectRatio: "1" }} />
                     }
                     {tags.length > 0 && (
                       <div style={{
@@ -426,13 +575,15 @@ function BratsPanel() {
 
       {/* Status bar */}
       <div style={{ flexShrink: 0, paddingTop: 4, fontSize: 11, color: "#555",
-        borderTop: "1px solid #222" }}>
-        {isLoading ? "Loading..." : status}
-        <span style={{ marginLeft: 8 }}>
-          ({samples.length} samples{activeView ? ` · ${activeView}` : ""})
+        borderTop: "1px solid #222", display: "flex", justifyContent: "space-between" }}>
+        <span>{isLoading ? "Loading..." : status}</span>
+        <span>
+          {samples.length} samples{activeView ? ` · ${activeView}` : ""}
+          {" · "}visible: {Math.min(visibleCount, samples.length)}
         </span>
       </div>
     </div>
+    </>
   );
 }
 
