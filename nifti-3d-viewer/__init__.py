@@ -159,10 +159,25 @@ class GetNiftiUrls(foo.Operator):
 
         segs = _get_seg_overlays(seg_path, mask_targets)
 
+        # Multi-modality support: modality_paths = {name: abs_path, ...}
+        modality_paths = getattr(sample, "modality_paths", None) or {}
+        modality_urls  = {
+            name: _nifti_url(path)
+            for name, path in modality_paths.items()
+            if path and os.path.exists(path)
+        }
+
+        # Default ct_url: first modality if available, otherwise nifti_path
+        if modality_urls:
+            ct_url = next(iter(modality_urls.values()))
+        else:
+            ct_url = _nifti_url(ct_path)
+
         return {
-            "ct_url":       _nifti_url(ct_path),
-            "segs":         segs,
-            "sample_label": getattr(sample, "patient_id", None) or sample_id[:8],
+            "ct_url":        ct_url,
+            "modality_urls": modality_urls,
+            "segs":          segs,
+            "sample_label":  getattr(sample, "patient_id", None) or sample_id[:8],
         }
 
 

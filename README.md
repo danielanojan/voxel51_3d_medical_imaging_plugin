@@ -78,6 +78,43 @@ python build_nifti_dataset.py \
 
 Run `python build_nifti_dataset.py --help` for all options.
 
+#### UCSF-PDGM dataset
+
+Two dedicated scripts handle the UCSF-PDGM flat folder layout (all NIfTI files in one folder per patient, prefixed with the patient ID):
+
+```
+UCSF-PDGM-0004_nifti/
+    UCSF-PDGM-0004_T1c_bias.nii.gz
+    UCSF-PDGM-0004_T2_bias.nii.gz
+    UCSF-PDGM-0004_FLAIR_bias.nii.gz
+    UCSF-PDGM-0004_tumor_segmentation.nii.gz
+    ...
+```
+
+**1-patient test dataset** (quickest way to verify both plugins work):
+
+```bash
+# Edit PATIENT_DIR at the top of the script to point to your folder, then:
+python build_ucsf_test.py
+```
+
+This creates a persistent FiftyOne dataset named `ucsf-pdgm-test` with:
+- Axial / coronal / sagittal PNG slices for the slice viewer
+- All available modalities in `modality_paths` for the 3D viewer dropdown and compare mode
+- Tumour segmentation overlays (NCR / ED / ET)
+
+**Full UCSF-PDGM dataset** (multiple patients, standard folder layout):
+
+```bash
+# Expected layout: <data_root>/UCSF-PDGM-*/  ← one subfolder per patient
+python build_ucsf_pdgm.py \
+    --data_root /path/to/UCSF-PDGM \
+    --output_root /path/to/output/slices \
+    --dataset_name ucsf-pdgm
+```
+
+Both scripts set `modality_paths` on every sample so the **3D viewer's modality dropdown and compare mode** work out of the box.
+
 ### 4. Launch FiftyOne
 
 ```bash
@@ -98,7 +135,9 @@ Open any sample in the modal to activate the **NIfTI 3D Viewer** panel.
 @daniel/                          ← clone here: ~/.fiftyone/plugins/@daniel
 ├── README.md                     ← this file
 ├── install.sh                    ← installs one or both plugins
-├── build_nifti_dataset.py        ← dataset builder (NIfTI → FiftyOne grouped dataset)
+├── build_nifti_dataset.py        ← generic NIfTI → FiftyOne grouped dataset builder
+├── build_ucsf_pdgm.py            ← UCSF-PDGM dataset builder (multi-patient)
+├── build_ucsf_test.py            ← UCSF-PDGM 1-patient test dataset builder
 ├── build_native_dataset.py       ← alternative builder for pre-extracted PNG slice datasets
 │
 ├── nifti-slice-viewer/           ← @daniel/nifti-slice-viewer
@@ -130,8 +169,9 @@ Both plugins read the same fields from each sample:
 | `nifti_path` | 3d-viewer | Absolute path to the primary NIfTI volume file |
 | `seg_path` | 3d-viewer | Absolute path to the segmentation NIfTI file (optional) |
 | `mask_targets` | both | Dict mapping pixel value → label name, e.g. `{"1": "NCR"}` |
+| `modality_paths` | 3d-viewer | Dict mapping modality name → absolute NIfTI path (enables dropdown + compare mode) |
 
-`build_nifti_dataset.py` sets all of these fields automatically.
+`build_nifti_dataset.py` sets all fields except `modality_paths`. The UCSF-PDGM scripts set all fields including `modality_paths`.
 
 ---
 
