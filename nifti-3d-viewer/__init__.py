@@ -5,60 +5,27 @@ Dataset convention (see README.md):
   nifti_path   — primary NIfTI volume path  (falls back to filepath)
   seg_path     — segmentation NIfTI path    (optional)
   mask_targets — {str(label_int): name}     (optional)
+
+NIfTI files are served through FiftyOne's built-in /media?filepath=... route
+so that everything goes through a single port (no separate Flask server needed).
+This makes remote access via SSH tunnel work correctly.
 """
 
 import os
-import threading
 import urllib.parse
 import fiftyone as fo
 import fiftyone.operators as foo
 import fiftyone.operators.types as types
 
-FLASK_PORT    = 5152
-_flask_thread = None
-_NIFTI_EXTS   = (".nii.gz", ".nii")
-
-
-def _start_flask():
-    from flask import Flask, request, send_file
-    import logging
-
-    app = Flask(__name__)
-    logging.getLogger("werkzeug").setLevel(logging.ERROR)
-
-    @app.route("/nifti")
-    def serve_nifti():
-        path = request.args.get("path", "")
-        if not path or not os.path.exists(path):
-            return f"Not found: {path}", 404
-        resp = send_file(path, mimetype="application/octet-stream",
-                         as_attachment=False,
-                         download_name=os.path.basename(path))
-        resp.headers["Access-Control-Allow-Origin"] = "*"
-        resp.headers["Cache-Control"] = "public, max-age=3600"
-        return resp
-
-    @app.route("/health")
-    def health():
-        return "ok"
-
-    app.run(host="0.0.0.0", port=FLASK_PORT, debug=False,
-            use_reloader=False, threaded=True)
-
-
-def _ensure_flask():
-    global _flask_thread
-    if _flask_thread and _flask_thread.is_alive():
-        return
-    _flask_thread = threading.Thread(target=_start_flask, daemon=True)
-    _flask_thread.start()
+_NIFTI_EXTS = (".nii.gz", ".nii")
 
 
 def _nifti_url(filepath: str) -> str:
+    """Return a relative URL served by FiftyOne's /media endpoint."""
     if not filepath:
         return ""
     encoded = urllib.parse.quote(filepath, safe="")
-    return f"http://localhost:{FLASK_PORT}/nifti?path={encoded}"
+    return f"/media?filepath={encoded}"
 
 
 def _is_nifti(path) -> bool:
@@ -135,8 +102,6 @@ class GetNiftiUrls(foo.Operator):
         return types.Property(inputs)
 
     def execute(self, ctx):
-        _ensure_flask()
-
         sample_id    = ctx.params.get("sample_id")
         dataset_name = ctx.params.get("dataset_name")
 
@@ -182,5 +147,4 @@ class GetNiftiUrls(foo.Operator):
 
 
 def register(p):
-    _ensure_flask()
     p.register(GetNiftiUrls)

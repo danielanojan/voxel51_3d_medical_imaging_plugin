@@ -270,7 +270,7 @@ function BratsPanel() {
     setImages({});
     samplesRef.current = [];
     imageCache.current.clear();
-    listOp.execute({ view: v || null });
+    listOp.execute({ view: v || null, filters: fosFilters, extended: fosExtended });
   };
 
   // Load config on mount

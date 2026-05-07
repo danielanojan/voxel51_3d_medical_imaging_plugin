@@ -219,12 +219,21 @@ class ListSliceSamples(foo.Operator):
         view_filter = ctx.params.get("view")
         is_grouped  = getattr(ctx.dataset, "media_type", None) == "group"
 
+        # Resolve filters — prefer explicit params (passed by frontend), fall back
+        # to request_params (populated by FiftyOne framework from App state).
+        filters  = ctx.params.get("filters")  or ctx.request_params.get("filters")
+        extended = ctx.params.get("extended") or ctx.request_params.get("extended")
+
         if is_grouped and view_filter:
             try:
-                # ctx.view already has App sidebar filters applied (scoped to the
-                # default group slice). Bridge to the target slice via group IDs so
-                # filters propagate correctly across axial/coronal/sagittal.
-                group_ids = ctx.view.distinct("group.id")
+                # Apply sidebar filters first to get matching group IDs, then
+                # select the target slice across those groups.
+                filtered = fosv.get_extended_view(
+                    ctx.dataset,
+                    filters=filters,
+                    extended_stages=extended,
+                )
+                group_ids = filtered.distinct("group.id")
                 sample_collection = (
                     ctx.dataset
                     .select_group_slices([view_filter])
@@ -236,8 +245,8 @@ class ListSliceSamples(foo.Operator):
             try:
                 sample_collection = fosv.get_extended_view(
                     ctx.dataset,
-                    filters=ctx.request_params.get("filters"),
-                    extended_stages=ctx.request_params.get("extended"),
+                    filters=filters,
+                    extended_stages=extended,
                 )
             except Exception:
                 sample_collection = ctx.dataset

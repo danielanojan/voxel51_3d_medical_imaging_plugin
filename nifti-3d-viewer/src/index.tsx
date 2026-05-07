@@ -7,6 +7,15 @@ import { Niivue } from "@niivue/niivue";
 
 const SEG_COLORMAPS = ["red", "warm", "violet", "green", "blue", "hot", "cool"];
 
+// Convert relative /media?filepath=... URLs to absolute using the FiftyOne
+// server origin — ensures NIfTI requests go through the same port as the app,
+// which is required when accessing remotely via SSH tunnel.
+function toAbsUrl(url: string): string {
+  if (!url) return url;
+  if (url.startsWith("http://") || url.startsWith("https://")) return url;
+  return window.location.origin + url;
+}
+
 const LAYOUT_OPTIONS = [
   { value: 3, label: "4-Up"     },
   { value: 0, label: "Axial"    },
@@ -108,11 +117,11 @@ function SingleNiivue({ label, volumeUrl, segs, activeSegs, layout, onMove, regi
   const [loading, setLoading] = useState(false);
 
   const buildVolumes = (url: string, segSet: Set<number>, segList: any[]) => {
-    const vols: any[] = [{ url, name: "volume.nii.gz", colormap: "gray", opacity: 1.0 }];
+    const vols: any[] = [{ url: toAbsUrl(url), name: "volume.nii.gz", colormap: "gray", opacity: 1.0 }];
     segSet.forEach(idx => {
       const seg = segList[idx];
       if (seg?.url) vols.push({
-        url: seg.url, name: `seg_${idx}.nii.gz`,
+        url: toAbsUrl(seg.url), name: `seg_${idx}.nii.gz`,
         colormap: SEG_COLORMAPS[idx % SEG_COLORMAPS.length],
         opacity: 0.6, colorbarVisible: false,
       });
@@ -248,11 +257,11 @@ function NiftiNiivuePanel() {
     if (!volumeUrl) { setStatus("❌ No volume URL"); return; }
 
     const segs: any[] = u.segs ?? [];
-    const volumes: any[] = [{ url: volumeUrl, name: "volume.nii.gz", colormap: "gray", opacity: 1.0 }];
+    const volumes: any[] = [{ url: toAbsUrl(volumeUrl), name: "volume.nii.gz", colormap: "gray", opacity: 1.0 }];
     activeSegsRef.current.forEach(idx => {
       const seg = segs[idx];
       if (seg?.url) volumes.push({
-        url: seg.url, name: `seg_${idx}.nii.gz`,
+        url: toAbsUrl(seg.url), name: `seg_${idx}.nii.gz`,
         colormap: SEG_COLORMAPS[idx % SEG_COLORMAPS.length],
         opacity: 0.6, colorbarVisible: false,
       });
